@@ -16,6 +16,12 @@ import {
 } from './geometry.js';
 import {formatMessage, type QuakeEntry} from './types.js';
 
+// Persistent module-level state to remember windows and their geometries
+// across disable/enable cycles (such as when the system is suspended).
+const PERSISTENT_WINDOWS = new Map<number, string>();
+const PERSISTENT_PERCENT = new Map<string, number>();
+const PERSISTENT_MONITOR = new Map<string, number>();
+
 const ANIM_MS = 180;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
@@ -57,6 +63,31 @@ export class QuakeManager {
                 this._onEnteredMonitor(monitorIndex, win),
             this,
         );
+
+        // Claim previously spawned windows after suspend/disable
+        this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            const aliveIds = new Set<number>();
+            for (const actor of global.get_window_actors()) {
+                const win = actor.meta_window;
+                if (!win)
+                    continue;
+                
+                const id = win.get_id();
+                aliveIds.add(id);
+
+                const entryId = PERSISTENT_WINDOWS.get(id);
+                if (entryId && this._entries.has(entryId))
+                    this._claimWindow(entryId, win, true);
+            }
+
+            // Cleanup any leaked window IDs
+            for (const id of PERSISTENT_WINDOWS.keys()) {
+                if (!aliveIds.has(id))
+                    PERSISTENT_WINDOWS.delete(id);
+            }
+
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     disable(): void {
@@ -201,7 +232,7 @@ export class QuakeManager {
         return this._normalizeAppId(app.get_id()) === this._normalizeAppId(appId);
     }
 
-    private _claimWindow(entryId: string, win: Meta.Window): void {
+    private _claimWindow(entryId: string, win: Meta.Window, isRestore = false): void {
         const entry = this._entries.get(entryId);
         if (!entry || !this._isWindowAlive(win))
             return;
@@ -213,13 +244,33 @@ export class QuakeManager {
             this._detachWindow(entryId, false);
 
         this._windows.set(entryId, win);
-        this._livePercent.delete(entryId);
-        this._lastMonitor.delete(entryId);
+        PERSISTENT_WINDOWS.set(win.get_id(), entryId);
+
+        if (!isRestore) {
+            this._livePercent.delete(entryId);
+            this._lastMonitor.delete(entryId);
+        }
 
         win.connectObject('unmanaged', () => {
+            PERSISTENT_WINDOWS.delete(win.get_id());
+            PERSISTENT_PERCENT.delete(entryId);
+            PERSISTENT_MONITOR.delete(entryId);
             if (this._windows.get(entryId) === win)
                 this._detachWindow(entryId, true);
         }, this);
+
+        if (isRestore) {
+            const percent = PERSISTENT_PERCENT.get(entryId);
+            if (percent !== undefined)
+                this._livePercent.set(entryId, percent);
+            const mon = PERSISTENT_MONITOR.get(entryId);
+            if (mon !== undefined)
+                this._lastMonitor.set(entryId, mon);
+            
+            if (this._isVisible(win))
+                this._applyQuakeGeometry(entryId, win, entry, false);
+            return;
+        }
 
         const place = () => {
             this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
@@ -318,11 +369,13 @@ export class QuakeManager {
         const safeIndex = sanitizeMonitorIndex(monitorIndex);
         if (win.minimized || !this._isVisible(win)) {
             this._lastMonitor.set(entryId, safeIndex);
+            PERSISTENT_MONITOR.set(entryId, safeIndex);
             return;
         }
 
         const previous = this._lastMonitor.get(entryId);
         this._lastMonitor.set(entryId, safeIndex);
+        PERSISTENT_MONITOR.set(entryId, safeIndex);
         if (previous === safeIndex)
             return;
 
@@ -351,6 +404,8 @@ export class QuakeManager {
         );
         this._livePercent.set(entryId, percent);
         this._lastMonitor.set(entryId, monitor);
+        PERSISTENT_PERCENT.set(entryId, percent);
+        PERSISTENT_MONITOR.set(entryId, monitor);
     }
 
     private _applyQuakeGeometry(
@@ -386,8 +441,11 @@ export class QuakeManager {
 
             win.move_resize_frame(false, rect.x, rect.y, rect.width, rect.height);
             this._lastMonitor.set(entryId, monitor);
-            if (!this._livePercent.has(entryId))
+            PERSISTENT_MONITOR.set(entryId, monitor);
+            if (!this._livePercent.has(entryId)) {
                 this._livePercent.set(entryId, percent);
+                PERSISTENT_PERCENT.set(entryId, percent);
+            }
         } finally {
             this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 this._applyingGeometry.delete(entryId);
