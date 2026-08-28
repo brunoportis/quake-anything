@@ -1,6 +1,7 @@
 {
   "name": "quake-anything",
-  "version": "1.0.2",
+  "version": "1.0.1",
+  "license": "GPL-2.0-or-later",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json && eslint \"dist/**/*.js\" --fix",
