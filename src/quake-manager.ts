@@ -22,7 +22,8 @@ const PERSISTENT_WINDOWS = new Map<number, string>();
 const PERSISTENT_PERCENT = new Map<string, number>();
 const PERSISTENT_MONITOR = new Map<string, number>();
 
-const ANIM_MS = 240;
+const SHOW_ANIM_MS = 240;
+const HIDE_ANIM_MS = 280;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
 
@@ -34,6 +35,15 @@ interface PendingClaim {
 interface FirstFrameWatch {
     actor: Clutter.Actor;
     fallbackId: number;
+}
+
+interface HideSnapshotState {
+    entryId: string;
+    visual: Clutter.Actor;
+}
+
+interface WindowManagerEffects {
+    skipNextEffect(actor: Meta.WindowActor): void;
 }
 
 /** Shell 49+: unmaximize with no flags argument. */
@@ -52,6 +62,7 @@ export class QuakeManager {
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
+    private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
     enable(): void {
         global.display.connectObject(
@@ -91,6 +102,8 @@ export class QuakeManager {
 
     disable(): void {
         global.display.disconnectObject(this);
+
+        this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
         for (const id of [...this._windows.keys()])
@@ -101,6 +114,7 @@ export class QuakeManager {
         this._applyingGeometry.clear();
         this._animating.clear();
         this._firstFrameWatches.clear();
+        this._hideSnapshots.clear();
     }
 
     setEntries(entries: QuakeEntry[]): void {
@@ -455,11 +469,14 @@ export class QuakeManager {
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
-            const actor = win.get_compositor_private() as Clutter.Actor | null;
+            const actor = win.get_compositor_private() as Meta.WindowActor | null;
             if (actor) {
+                this._clearHideSnapshot(actor);
                 actor.remove_all_transitions();
                 actor.set_translation(0, 0, 0);
+                actor.set_scale(1, 1);
                 actor.set_opacity(255);
+                actor.set_pivot_point(0, 0);
             }
         }
 
@@ -607,12 +624,23 @@ export class QuakeManager {
             return;
         }
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
-        if (actor)
-            actor.set_opacity(255);
+        const actor = win.get_compositor_private() as Meta.WindowActor | null;
 
-        if (win.minimized)
+        if (actor) {
+            actor.remove_all_transitions();
+            actor.set_translation(0, 0, 0);
+            actor.set_scale(1, 1);
+            actor.set_opacity(0);
+            actor.set_pivot_point(0, 0);
+        }
+
+        if (win.minimized) {
+            if (actor) {
+                (Main.wm as unknown as WindowManagerEffects)
+                    .skipNextEffect(actor);
+            }
             win.unminimize();
+        }
 
         this._applyQuakeGeometry(entryId, win, entry, false);
 
@@ -621,32 +649,46 @@ export class QuakeManager {
             return;
         }
 
-        win.activate(global.get_current_time());
-
-        if (!actor)
+        if (!actor) {
+            win.activate(global.get_current_time());
             return;
+        }
 
         const rect = computeQuakeRect(
             entry.side,
             this._effectivePercent(entryId, entry),
             sanitizeMonitorIndex(win.get_monitor()),
         );
-        if (!isValidRect(rect))
+        if (!isValidRect(rect)) {
+            actor.set_opacity(255);
+            win.activate(global.get_current_time());
             return;
+        }
 
         const offset = slideOffsetForSide(entry.side, rect);
-        actor.remove_all_transitions();
+        const bufferRect = win.get_buffer_rect();
+
+        // skipNextEffect() completes unminimize without running Shell's normal
+        // actor-position animation. Sync the compositor actor explicitly to
+        // Mutter's authoritative buffer geometry before our slide-in starts.
+        actor.set_position(bufferRect.x, bufferRect.y);
+        actor.set_size(bufferRect.width, bufferRect.height);
         actor.set_translation(offset.x, offset.y, 0);
+        actor.set_opacity(255);
+        win.activate(global.get_current_time());
+
         this._animating.add(entryId);
+        // GJS/Clutter expects GObject property names here. The bundled
+        // TypeScript typings expose camelCase aliases instead, hence the cast.
         actor.ease({
-            translationX: 0,
-            translationY: 0,
-            duration: ANIM_MS,
+            translation_x: 0,
+            translation_y: 0,
+            duration: SHOW_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onStopped: () => {
                 this._animating.delete(entryId);
             },
-        });
+        } as any);
     }
 
     private _hide(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
@@ -659,7 +701,7 @@ export class QuakeManager {
 
         this._rememberQuakePercent(entryId, win, entry);
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
+        const actor = win.get_compositor_private() as Meta.WindowActor | null;
         if (!actor) {
             win.minimize();
             return;
@@ -676,27 +718,88 @@ export class QuakeManager {
         }
 
         const offset = slideOffsetForSide(entry.side, rect);
-        actor.remove_all_transitions();
+
+        // Meta.Window geometry is authoritative. Meta.WindowActor can briefly
+        // retain stale coordinates across unminimize/geometry synchronization.
+        const bufferRect = win.get_buffer_rect();
+        const snapshotRect = {
+            x: bufferRect.x,
+            y: bufferRect.y,
+            width: bufferRect.width,
+            height: bufferRect.height,
+        };
+
+        try {
+            const content = actor.paint_to_content(null);
+            const parent = actor.get_parent();
+
+            if (!content || !parent)
+                throw new Error('snapshot content or parent unavailable');
+
+            const visual = new Clutter.Actor({
+                x: snapshotRect.x,
+                y: snapshotRect.y,
+                width: snapshotRect.width,
+                height: snapshotRect.height,
+                reactive: false,
+            });
+            visual.set_content(content);
+            parent.add_child(visual);
+
+            this._hideSnapshots.set(actor, {entryId, visual});
+            this._animating.add(entryId);
+
+            // Keep the real window mapped but invisible while the independent
+            // snapshot performs the whole visual transition. Only after the
+            // snapshot reaches the edge do we ask Mutter to minimize, with its
+            // native effect explicitly skipped.
+            actor.set_opacity(0);
+
+            // Clutter.ease() uses GObject property names at runtime.
+            visual.ease({
+                translation_x: offset.x,
+                translation_y: offset.y,
+                duration: HIDE_ANIM_MS,
+                mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
+                onStopped: () => {
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win)) {
+                        (Main.wm as unknown as WindowManagerEffects)
+                            .skipNextEffect(actor);
+                        win.minimize();
+                    }
+
+                    this._clearHideSnapshot(actor);
+                },
+            } as any);
+        } catch (e) {
+            console.warn('[quake-anything] hide snapshot failed; minimizing without animation', e);
+            actor.set_opacity(255);
+            (Main.wm as unknown as WindowManagerEffects)
+                .skipNextEffect(actor);
+            win.minimize();
+        }
+    }
+
+    private _clearHideSnapshot(actor: Meta.WindowActor): void {
+        const state = this._hideSnapshots.get(actor);
+        if (!state)
+            return;
+
+        this._hideSnapshots.delete(actor);
+        this._animating.delete(state.entryId);
+
+        state.visual.remove_all_transitions();
+        state.visual.destroy();
+
         actor.set_translation(0, 0, 0);
-        this._animating.add(entryId);
-        actor.ease({
-            translationX: offset.x,
-            translationY: offset.y,
-            duration: ANIM_MS,
-            mode: Clutter.AnimationMode.EASE_IN_CUBIC,
-            onStopped: () => {
-                this._animating.delete(entryId);
+        actor.set_scale(1, 1);
+        actor.set_opacity(255);
+        actor.set_pivot_point(0, 0);
+    }
 
-                if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
-                    return;
-
-                // Keep Mutter's regular minimize animation invisible. The
-                // opacity is restored before unminimizing in _show().
-                actor.set_opacity(0);
-                actor.set_translation(0, 0, 0);
-                win.minimize();
-            },
-        });
+    private _clearHideSnapshots(): void {
+        for (const actor of [...this._hideSnapshots.keys()])
+            this._clearHideSnapshot(actor);
     }
 
     private _resolveApp(appId: string): Shell.App | null {
