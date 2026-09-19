@@ -52,7 +52,7 @@ add an entry, and set:
 |--------|---------|
 | **Application** | Any installed GUI app |
 | **Side** | Top / bottom / left / right |
-| **Monitor** | Automatic, or a specific connected monitor |
+| **Monitor** | Automatic, or a specific connected display identified by its connector |
 | **Keyboard shortcut** | Toggle show/hide (Esc cancels, Backspace clears; conflicts are warned) |
 | **Default size** | Percentage of the monitor work area (10–90%) |
 | **Top crop** | Pixels hidden from the top of the window; useful for client-side PWA/browser chrome (`0` disables) |
