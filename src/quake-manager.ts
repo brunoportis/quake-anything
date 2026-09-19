@@ -63,8 +63,6 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
-    private _monitorCorrectionIds = new Map<string, number>();
-    private _initialMonitorSettling = new Set<string>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -110,8 +108,6 @@ export class QuakeManager {
         this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
-        this._monitorCorrectionIds.clear();
-        this._initialMonitorSettling.clear();
         for (const id of [...this._windows.keys()])
             this._detachWindow(id, false);
         this._entries.clear();
@@ -430,23 +426,13 @@ export class QuakeManager {
             this._lastMonitor.delete(entryId);
         }
 
-        win.connectObject(
-            'unmanaged', () => {
-                PERSISTENT_WINDOWS.delete(win.get_id());
-                PERSISTENT_PERCENT.delete(entryId);
-                PERSISTENT_MONITOR.delete(entryId);
-                this._clearMonitorCorrection(entryId);
-                if (this._windows.get(entryId) === win)
-                    this._detachWindow(entryId, true);
-            },
-            'position-changed', () => {
-                this._scheduleConfiguredMonitorCorrection(entryId, win);
-            },
-            'shown', () => {
-                this._scheduleConfiguredMonitorCorrection(entryId, win);
-            },
-            this,
-        );
+        win.connectObject('unmanaged', () => {
+            PERSISTENT_WINDOWS.delete(win.get_id());
+            PERSISTENT_PERCENT.delete(entryId);
+            PERSISTENT_MONITOR.delete(entryId);
+            if (this._windows.get(entryId) === win)
+                this._detachWindow(entryId, true);
+        }, this);
 
         if (isRestore) {
             const percent = PERSISTENT_PERCENT.get(entryId);
@@ -472,12 +458,26 @@ export class QuakeManager {
                 if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
                     return GLib.SOURCE_REMOVE;
 
+                this._applyQuakeGeometry(entryId, win, entry, true);
+                this._show(entryId, win, entry);
+
+                // Chromium can restore its remembered monitor shortly after the
+                // first map. Let that startup work finish, then do one final,
+                // non-reactive placement for explicitly configured monitors.
                 if (this._configuredMonitor(entry) !== null) {
-                    this._settleInitialConfiguredMonitor(entryId, win);
-                } else {
-                    this._applyQuakeGeometry(entryId, win, entry, true);
-                    this._show(entryId, win, entry);
+                    this._timeoutAdd(GLib.PRIORITY_DEFAULT, 1000, () => {
+                        if (
+                            this._windows.get(entryId) === win &&
+                            this._isWindowAlive(win)
+                        ) {
+                            const currentEntry = this._entries.get(entryId);
+                            if (currentEntry && this._configuredMonitor(currentEntry) !== null)
+                                this._applyQuakeGeometry(entryId, win, currentEntry, false);
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
                 }
+
                 return GLib.SOURCE_REMOVE;
             });
         };
@@ -487,9 +487,6 @@ export class QuakeManager {
             : null;
 
         if (actor) {
-            if (this._configuredMonitor(entry) !== null)
-                actor.set_opacity(0);
-
             this._clearFirstFrameWatch(entryId);
             actor.connectObject('first-frame', () => {
                 this._clearFirstFrameWatch(entryId);
@@ -520,8 +517,6 @@ export class QuakeManager {
         const win = this._windows.get(entryId);
         win?.disconnectObject(this);
         this._clearFirstFrameWatch(entryId);
-        this._clearMonitorCorrection(entryId);
-        this._initialMonitorSettling.delete(entryId);
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
@@ -601,143 +596,6 @@ export class QuakeManager {
         return sanitizeMonitorIndex(rawMonitor);
     }
 
-    private _settleInitialConfiguredMonitor(
-        entryId: string,
-        win: Meta.Window,
-    ): void {
-        const delays = [250, 320, 420, 520];
-        this._initialMonitorSettling.add(entryId);
-
-        const actor = win.get_compositor_private() as Meta.WindowActor | null;
-        if (actor)
-            actor.set_opacity(0);
-
-        const attempt = (index: number) => {
-            if (
-                this._windows.get(entryId) !== win ||
-                !this._isWindowAlive(win)
-            ) {
-                this._initialMonitorSettling.delete(entryId);
-                return;
-            }
-
-            const entry = this._entries.get(entryId);
-            if (!entry) {
-                this._initialMonitorSettling.delete(entryId);
-                return;
-            }
-
-            const targetMonitor = this._configuredMonitor(entry);
-            if (targetMonitor === null) {
-                this._initialMonitorSettling.delete(entryId);
-                this._applyQuakeGeometry(entryId, win, entry, true);
-                this._show(entryId, win, entry);
-                return;
-            }
-
-            this._applyQuakeGeometry(entryId, win, entry, false);
-
-            const delay = delays[Math.min(index, delays.length - 1)];
-            this._timeoutAdd(GLib.PRIORITY_DEFAULT, delay, () => {
-                if (
-                    this._windows.get(entryId) !== win ||
-                    !this._isWindowAlive(win)
-                ) {
-                    this._initialMonitorSettling.delete(entryId);
-                    return GLib.SOURCE_REMOVE;
-                }
-
-                const currentEntry = this._entries.get(entryId);
-                if (!currentEntry) {
-                    this._initialMonitorSettling.delete(entryId);
-                    return GLib.SOURCE_REMOVE;
-                }
-
-                const currentTarget = this._configuredMonitor(currentEntry);
-                const onTarget = currentTarget !== null &&
-                    sanitizeMonitorIndex(win.get_monitor()) === currentTarget;
-
-                if (!onTarget && index + 1 < delays.length) {
-                    attempt(index + 1);
-                    return GLib.SOURCE_REMOVE;
-                }
-
-                // Either the window survived a delayed check on the configured
-                // monitor, or we reached the bounded retry limit. In both cases
-                // finish with one authoritative placement before showing it.
-                this._applyQuakeGeometry(entryId, win, currentEntry, false);
-                this._initialMonitorSettling.delete(entryId);
-                this._show(entryId, win, currentEntry);
-                return GLib.SOURCE_REMOVE;
-            });
-        };
-
-        attempt(0);
-    }
-
-    private _scheduleConfiguredMonitorCorrection(
-        entryId: string,
-        win: Meta.Window,
-    ): void {
-        const entry = this._entries.get(entryId);
-        if (!entry || !entry.monitorConnector)
-            return;
-        if (this._initialMonitorSettling.has(entryId))
-            return;
-        if (!this._isWindowAlive(win) || win.minimized)
-            return;
-
-        const configuredMonitor = this._configuredMonitor(entry);
-        if (configuredMonitor === null)
-            return;
-        if (sanitizeMonitorIndex(win.get_monitor()) === configuredMonitor) {
-            this._clearMonitorCorrection(entryId);
-            return;
-        }
-
-        this._clearMonitorCorrection(entryId);
-
-        // Chromium can restore its remembered monitor during the initial map,
-        // after Quake has already applied the requested geometry. Debounce the
-        // final placement so we correct the result after that startup burst.
-        const sourceId = this._timeoutAdd(
-            GLib.PRIORITY_DEFAULT,
-            300,
-            () => {
-                this._monitorCorrectionIds.delete(entryId);
-                if (
-                    this._windows.get(entryId) !== win ||
-                    !this._isWindowAlive(win) ||
-                    win.minimized
-                )
-                    return GLib.SOURCE_REMOVE;
-
-                const currentEntry = this._entries.get(entryId);
-                if (!currentEntry)
-                    return GLib.SOURCE_REMOVE;
-
-                const targetMonitor = this._configuredMonitor(currentEntry);
-                if (
-                    targetMonitor !== null &&
-                    sanitizeMonitorIndex(win.get_monitor()) !== targetMonitor
-                ) {
-                    this._applyQuakeGeometry(entryId, win, currentEntry, false);
-                }
-
-                return GLib.SOURCE_REMOVE;
-            },
-        );
-        this._monitorCorrectionIds.set(entryId, sourceId);
-    }
-
-    private _clearMonitorCorrection(entryId: string): void {
-        const sourceId = this._monitorCorrectionIds.get(entryId);
-        if (sourceId === undefined)
-            return;
-        this._monitorCorrectionIds.delete(entryId);
-        this._removeSource(sourceId);
-    }
-
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
         const entryId = this._entryIdForWindow(win);
         if (!entryId)
@@ -756,7 +614,6 @@ export class QuakeManager {
         if (configuredMonitor !== null) {
             this._lastMonitor.set(entryId, configuredMonitor);
             PERSISTENT_MONITOR.set(entryId, configuredMonitor);
-            this._scheduleConfiguredMonitorCorrection(entryId, win);
             return;
         }
         if (win.minimized || !this._isVisible(win)) {
