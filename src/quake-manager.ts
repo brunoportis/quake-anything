@@ -42,7 +42,6 @@ interface HideSnapshotState {
     entryId: string;
     visual: Clutter.Actor;
     topCrop: number;
-    cropTranslationY: number;
 }
 
 interface WindowManagerEffects {
@@ -64,7 +63,6 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
-    private _cropLift = new Map<string, number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -115,7 +113,6 @@ export class QuakeManager {
         this._entries.clear();
         this._livePercent.clear();
         this._lastMonitor.clear();
-        this._cropLift.clear();
         this._applyingGeometry.clear();
         this._animating.clear();
         this._firstFrameWatches.clear();
@@ -129,7 +126,6 @@ export class QuakeManager {
                 this._detachWindow(id, false);
                 this._livePercent.delete(id);
                 this._lastMonitor.delete(id);
-                this._cropLift.delete(id);
             }
         }
 
@@ -430,13 +426,37 @@ export class QuakeManager {
             this._lastMonitor.delete(entryId);
         }
 
-        win.connectObject('unmanaged', () => {
-            PERSISTENT_WINDOWS.delete(win.get_id());
-            PERSISTENT_PERCENT.delete(entryId);
-            PERSISTENT_MONITOR.delete(entryId);
-            if (this._windows.get(entryId) === win)
-                this._detachWindow(entryId, true);
-        }, this);
+        win.connectObject(
+            'unmanaged', () => {
+                PERSISTENT_WINDOWS.delete(win.get_id());
+                PERSISTENT_PERCENT.delete(entryId);
+                PERSISTENT_MONITOR.delete(entryId);
+                if (this._windows.get(entryId) === win)
+                    this._detachWindow(entryId, true);
+            },
+            'size-changed', () => {
+                if (
+                    this._windows.get(entryId) !== win ||
+                    !this._isWindowAlive(win) ||
+                    !this._isVisible(win) ||
+                    this._animating.has(entryId)
+                )
+                    return;
+
+                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    const currentEntry = this._entries.get(entryId);
+                    if (
+                        currentEntry &&
+                        this._windows.get(entryId) === win &&
+                        this._isWindowAlive(win)
+                    ) {
+                        this._applyVisibleTopCrop(entryId, win, currentEntry);
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
+            },
+            this,
+        );
 
         if (isRestore) {
             const percent = PERSISTENT_PERCENT.get(entryId);
@@ -503,7 +523,6 @@ export class QuakeManager {
         const win = this._windows.get(entryId);
         win?.disconnectObject(this);
         this._clearFirstFrameWatch(entryId);
-        this._cropLift.delete(entryId);
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
@@ -635,23 +654,6 @@ export class QuakeManager {
         );
     }
 
-    private _cropLiftForRect(
-        monitor: number,
-        rectY: number,
-        topCrop: number,
-    ): number {
-        if (topCrop <= 0)
-            return 0;
-
-        const monitorGeometry = global.display.get_monitor_geometry(monitor);
-        const availableAbove = Math.max(0, rectY - monitorGeometry.y);
-        return Math.min(topCrop, availableAbove);
-    }
-
-    private _cropTranslationY(entryId: string, entry: QuakeEntry): number {
-        return (this._cropLift.get(entryId) ?? 0) - this._topCrop(entry);
-    }
-
     private _applyTopCrop(
         actor: Clutter.Actor,
         topCrop: number,
@@ -686,11 +688,8 @@ export class QuakeManager {
         const topCrop = this._topCrop(entry);
         const bufferRect = win.get_buffer_rect();
 
-        actor.remove_all_transitions();
-        actor.set_position(bufferRect.x, bufferRect.y);
-        actor.set_size(bufferRect.width, bufferRect.height);
         this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
-        actor.set_translation(0, this._cropTranslationY(entryId, entry), 0);
+        actor.set_translation(0, -topCrop, 0);
     }
 
     private _rememberQuakePercent(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
@@ -700,15 +699,9 @@ export class QuakeManager {
         const frame = win.get_frame_rect();
         const monitor = sanitizeMonitorIndex(win.get_monitor());
         const rememberedMonitor = this._configuredMonitor(entry) ?? monitor;
-        const cropLift = this._cropLift.get(entryId) ?? 0;
         const percent = percentFromRect(
             entry.side,
-            {
-                x: frame.x,
-                y: frame.y,
-                width: frame.width,
-                height: Math.max(1, frame.height - cropLift),
-            },
+            { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
             monitor,
         );
         this._livePercent.set(entryId, percent);
@@ -750,19 +743,15 @@ export class QuakeManager {
             if (!win.located_on_workspace(workspace))
                 win.change_workspace(workspace);
 
-            const topCrop = this._topCrop(entry);
-            const cropLift = this._cropLiftForRect(monitor, rect.y, topCrop);
-            this._cropLift.set(entryId, cropLift);
-
-            // Keep any extra crop geometry inside the physical monitor. The
-            // previous implementation extended a full-height side window below
-            // the monitor, which can make Mutter relocate it to another output.
+            // Keep Meta.Window geometry identical to the pre-crop behavior.
+            // Top crop is a compositor-only effect and must not influence
+            // Mutter's placement or work-area constraints.
             win.move_resize_frame(
                 false,
                 rect.x,
-                rect.y - cropLift,
+                rect.y,
                 rect.width,
-                rect.height + cropLift,
+                rect.height,
             );
 
             this._lastMonitor.set(entryId, monitor);
@@ -828,7 +817,6 @@ export class QuakeManager {
         }
 
         const topCrop = this._topCrop(entry);
-        const cropTranslationY = this._cropTranslationY(entryId, entry);
         const showMonitor = this._monitorForEntry(entryId, win, entry, false);
         const rect = computeQuakeRect(
             entry.side,
@@ -837,7 +825,7 @@ export class QuakeManager {
         );
         if (!isValidRect(rect)) {
             this._applyTopCrop(actor, topCrop);
-            actor.set_translation(0, cropTranslationY, 0);
+            actor.set_translation(0, -topCrop, 0);
             actor.set_opacity(255);
             win.activate(global.get_current_time());
             return;
@@ -852,7 +840,7 @@ export class QuakeManager {
         actor.set_position(bufferRect.x, bufferRect.y);
         actor.set_size(bufferRect.width, bufferRect.height);
         this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
-        actor.set_translation(offset.x, offset.y + cropTranslationY, 0);
+        actor.set_translation(offset.x, offset.y - topCrop, 0);
         actor.set_opacity(255);
         win.activate(global.get_current_time());
 
@@ -861,7 +849,7 @@ export class QuakeManager {
         // TypeScript typings expose camelCase aliases instead, hence the cast.
         actor.ease({
             translation_x: 0,
-            translation_y: cropTranslationY,
+            translation_y: -topCrop,
             duration: SHOW_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onStopped: () => {
@@ -898,7 +886,6 @@ export class QuakeManager {
 
         const offset = slideOffsetForSide(entry.side, rect);
         const topCrop = this._topCrop(entry);
-        const cropTranslationY = this._cropTranslationY(entryId, entry);
 
         // Meta.Window geometry is authoritative. Meta.WindowActor can briefly
         // retain stale coordinates across unminimize/geometry synchronization.
@@ -931,15 +918,10 @@ export class QuakeManager {
                 snapshotRect.width,
                 snapshotRect.height,
             );
-            visual.set_translation(0, cropTranslationY, 0);
+            visual.set_translation(0, -topCrop, 0);
             parent.add_child(visual);
 
-            this._hideSnapshots.set(actor, {
-                entryId,
-                visual,
-                topCrop,
-                cropTranslationY,
-            });
+            this._hideSnapshots.set(actor, {entryId, visual, topCrop});
             this._animating.add(entryId);
 
             // Keep the real window mapped but invisible while the independent
@@ -951,7 +933,7 @@ export class QuakeManager {
             // Clutter.ease() uses GObject property names at runtime.
             visual.ease({
                 translation_x: offset.x,
-                translation_y: offset.y + cropTranslationY,
+                translation_y: offset.y - topCrop,
                 duration: HIDE_ANIM_MS,
                 mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
                 onStopped: () => {
@@ -985,7 +967,7 @@ export class QuakeManager {
         state.visual.destroy();
 
         this._applyTopCrop(actor, state.topCrop);
-        actor.set_translation(0, state.cropTranslationY, 0);
+        actor.set_translation(0, -state.topCrop, 0);
         actor.set_scale(1, 1);
         actor.set_opacity(255);
         actor.set_pivot_point(0, 0);
