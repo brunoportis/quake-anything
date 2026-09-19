@@ -539,6 +539,39 @@ export class QuakeManager {
         return null;
     }
 
+    private _configuredMonitor(entry: QuakeEntry): number | null {
+        const monitorIndex = entry.monitorIndex;
+        const monitorCount = global.display.get_n_monitors();
+        if (
+            monitorIndex === null ||
+            !Number.isInteger(monitorIndex) ||
+            monitorIndex < 0 ||
+            monitorIndex >= monitorCount
+        )
+            return null;
+
+        return monitorIndex;
+    }
+
+    private _monitorForEntry(
+        entryId: string,
+        win: Meta.Window,
+        entry: QuakeEntry,
+        usePointerMonitor: boolean,
+    ): number {
+        const configuredMonitor = this._configuredMonitor(entry);
+        if (configuredMonitor !== null)
+            return configuredMonitor;
+
+        const rawMonitor = usePointerMonitor
+            ? getPointerMonitorIndex()
+            : this._lastMonitor.get(entryId)
+                ?? PERSISTENT_MONITOR.get(entryId)
+                ?? win.get_monitor();
+
+        return sanitizeMonitorIndex(rawMonitor);
+    }
+
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
         const entryId = this._entryIdForWindow(win);
         if (!entryId)
@@ -553,6 +586,24 @@ export class QuakeManager {
             return;
 
         const safeIndex = sanitizeMonitorIndex(monitorIndex);
+        const configuredMonitor = this._configuredMonitor(entry);
+        if (configuredMonitor !== null) {
+            this._lastMonitor.set(entryId, configuredMonitor);
+            PERSISTENT_MONITOR.set(entryId, configuredMonitor);
+
+            if (
+                safeIndex !== configuredMonitor &&
+                !win.minimized &&
+                this._isVisible(win)
+            ) {
+                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win))
+                        this._applyQuakeGeometry(entryId, win, entry, false);
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
+            return;
+        }
         if (win.minimized || !this._isVisible(win)) {
             this._lastMonitor.set(entryId, safeIndex);
             PERSISTENT_MONITOR.set(entryId, safeIndex);
@@ -631,6 +682,7 @@ export class QuakeManager {
 
         const frame = win.get_frame_rect();
         const monitor = sanitizeMonitorIndex(win.get_monitor());
+        const rememberedMonitor = this._configuredMonitor(entry) ?? monitor;
         const topCrop = this._topCrop(entry);
         const percent = percentFromRect(
             entry.side,
@@ -643,9 +695,9 @@ export class QuakeManager {
             monitor,
         );
         this._livePercent.set(entryId, percent);
-        this._lastMonitor.set(entryId, monitor);
+        this._lastMonitor.set(entryId, rememberedMonitor);
         PERSISTENT_PERCENT.set(entryId, percent);
-        PERSISTENT_MONITOR.set(entryId, monitor);
+        PERSISTENT_MONITOR.set(entryId, rememberedMonitor);
     }
 
     private _applyQuakeGeometry(
@@ -658,12 +710,12 @@ export class QuakeManager {
             return;
 
         const percent = this._effectivePercent(entryId, entry);
-        const rawMonitor = usePointerMonitor
-            ? getPointerMonitorIndex()
-            : this._lastMonitor.get(entryId)
-                ?? PERSISTENT_MONITOR.get(entryId)
-                ?? win.get_monitor();
-        const monitor = sanitizeMonitorIndex(rawMonitor);
+        const monitor = this._monitorForEntry(
+            entryId,
+            win,
+            entry,
+            usePointerMonitor,
+        );
         const rect = computeQuakeRect(entry.side, percent, monitor);
         if (!isValidRect(rect)) {
             console.error('[quake-anything] refusing invalid quake rect', rect);
@@ -752,11 +804,7 @@ export class QuakeManager {
         }
 
         const topCrop = this._topCrop(entry);
-        const showMonitor = sanitizeMonitorIndex(
-            this._lastMonitor.get(entryId)
-                ?? PERSISTENT_MONITOR.get(entryId)
-                ?? win.get_monitor(),
-        );
+        const showMonitor = this._monitorForEntry(entryId, win, entry, false);
         const rect = computeQuakeRect(
             entry.side,
             this._effectivePercent(entryId, entry),
