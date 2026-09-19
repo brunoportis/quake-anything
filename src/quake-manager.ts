@@ -42,6 +42,10 @@ interface HideSnapshotState {
     visual: Clutter.Actor;
 }
 
+interface WindowManagerEffects {
+    skipNextEffect(actor: Meta.WindowActor): void;
+}
+
 /** Shell 49+: unmaximize with no flags argument. */
 function unmaximizeWindow(win: Meta.Window): void {
     if (win.get_maximize_flags() !== 0)
@@ -620,12 +624,17 @@ export class QuakeManager {
             return;
         }
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
+        const actor = win.get_compositor_private() as Meta.WindowActor | null;
         if (actor)
             actor.set_opacity(255);
 
-        if (win.minimized)
+        if (win.minimized) {
+            if (actor) {
+                (Main.wm as unknown as WindowManagerEffects)
+                    .skipNextEffect(actor);
+            }
             win.unminimize();
+        }
 
         this._applyQuakeGeometry(entryId, win, entry, false);
 
@@ -648,7 +657,7 @@ export class QuakeManager {
             return;
 
         const offset = slideOffsetForSide(entry.side, rect);
-        console.log('[quake-hide] request', JSON.stringify({
+        console.log('[quake-show] animation-start', JSON.stringify({
             entryId,
             windowId: win.get_id(),
             side: entry.side,
@@ -747,10 +756,12 @@ export class QuakeManager {
                 offset,
             }));
 
-            // Let Mutter perform its normal minimize lifecycle, but make the
-            // real actor invisible while our independent snapshot is on stage.
-            // The stock minimize animation therefore cannot visually compete.
+            // Complete the normal minimize lifecycle without GNOME Shell's
+            // scale-to-corner animation. Our snapshot is the only visual
+            // effect for this toggle.
             actor.set_opacity(0);
+            (Main.wm as unknown as WindowManagerEffects)
+                .skipNextEffect(actor);
             win.minimize();
 
             visual.ease({
@@ -766,8 +777,10 @@ export class QuakeManager {
                 },
             });
         } catch (e) {
-            console.warn('[quake-anything] hide snapshot failed; using native minimize', e);
+            console.warn('[quake-anything] hide snapshot failed; minimizing without animation', e);
             actor.set_opacity(255);
+            (Main.wm as unknown as WindowManagerEffects)
+                .skipNextEffect(actor);
             win.minimize();
         }
     }
