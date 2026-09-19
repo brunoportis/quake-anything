@@ -277,9 +277,26 @@ export class QuakeManager {
             .map(actor => actor.meta_window)
             .filter((win): win is Meta.Window => !!win && this._isWindowAlive(win));
 
+        const tracker = Shell.WindowTracker.get_default();
+        const startupWmClass = this._getStartupWmClass(entry.appId);
+
+        console.log('[quake-anything] recovery probe', JSON.stringify({
+            expectedAppId: entry.appId,
+            startupWmClass,
+            windows: windows.map(win => ({
+                id: win.get_id(),
+                title: win.get_title(),
+                trackedAppId: tracker.get_window_app(win)?.get_id() ?? null,
+                wmClass: win.get_wm_class(),
+                wmClassInstance: win.get_wm_class_instance(),
+                gtkApplicationId: win.get_gtk_application_id(),
+                sandboxedAppId: win.get_sandboxed_app_id(),
+                pid: win.get_pid(),
+            })),
+        }));
+
         // StartupWMClass is a stronger identity than Shell's generic app tracker,
         // especially for Chromium/Chrome PWAs.
-        const startupWmClass = this._getStartupWmClass(entry.appId);
         if (startupWmClass) {
             const wmClassMatch = windows.find(win =>
                 this._windowMatchesWmClass(win, startupWmClass));
