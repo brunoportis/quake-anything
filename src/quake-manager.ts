@@ -792,6 +792,20 @@ export class QuakeManager {
         this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
         actor.set_translation(offset.x, offset.y - topCrop, 0);
         actor.set_opacity(255);
+
+        if (topCrop > 0) {
+            console.log('[quake-crop] show', JSON.stringify({
+                entryId,
+                windowId: win.get_id(),
+                topCrop,
+                bufferRect: {
+                    x: bufferRect.x,
+                    y: bufferRect.y,
+                    width: bufferRect.width,
+                    height: bufferRect.height,
+                },
+            }));
+        }
         win.activate(global.get_current_time());
 
         this._animating.add(entryId);
