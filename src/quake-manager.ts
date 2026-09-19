@@ -286,30 +286,30 @@ export class QuakeManager {
             return null;
 
         const appMatch = commandLine.match(
-            /(?:^|\\s)--app=(?:"([^"]+)"|'([^']+)'|(\\S+))/,
+            /(?:^|\s)--app=(?:"([^"]+)"|'([^']+)'|(\S+))/,
         );
         const appUrl = appMatch?.[1] ?? appMatch?.[2] ?? appMatch?.[3];
         if (!appUrl)
             return null;
 
         const urlMatch = appUrl.match(
-            /^[a-z][a-z0-9+.-]*:\\/\\/([^/?#]+)([^?#]*)/i,
+            /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)([^?#]*)/i,
         );
         if (!urlMatch)
             return null;
 
-        const host = urlMatch[1].replace(/:\\d+$/, '').toLowerCase();
+        const host = urlMatch[1].replace(/:\d+$/, '').toLowerCase();
         const path = urlMatch[2] || '/';
 
         // Chromium derives URL-app names from "{host}_{path}" and sanitizes
         // path separators for the WM class. For example:
         // https://chatgpt.com -> chatgpt.com_/ -> chatgpt.com__
         const token = `${host}_${path}`
-            .replace(/[\\/\\\\]/g, '_')
+            .replace(/[\/\\]/g, '_')
             .toLowerCase();
 
         const profileMatch = commandLine.match(
-            /(?:^|\\s)--profile-directory=(?:"([^"]+)"|'([^']+)'|(\\S+))/,
+            /(?:^|\s)--profile-directory=(?:"([^"]+)"|'([^']+)'|(\S+))/,
         );
         const profile = profileMatch?.[1] ?? profileMatch?.[2] ?? profileMatch?.[3] ?? null;
 
