@@ -63,7 +63,6 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
-    private _laterIds = new Set<number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -109,7 +108,6 @@ export class QuakeManager {
         this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
-        this._clearLaters();
         for (const id of [...this._windows.keys()])
             this._detachWindow(id, false);
         this._entries.clear();
@@ -459,17 +457,8 @@ export class QuakeManager {
             this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
                     return GLib.SOURCE_REMOVE;
-
-                // The first Wayland/Chromium frame can still carry the client's
-                // initial placement. Apply the Quake geometry first, then wait
-                // until Mutter reaches its pre-redraw phase before reading the
-                // compositor buffer rectangle used by the slide animation.
                 this._applyQuakeGeometry(entryId, win, entry, true);
-                this._laterAdd(Meta.LaterType.BEFORE_REDRAW, () => {
-                    if (this._windows.get(entryId) === win && this._isWindowAlive(win))
-                        this._show(entryId, win, entry, false);
-                    return GLib.SOURCE_REMOVE;
-                });
+                this._show(entryId, win, entry);
                 return GLib.SOURCE_REMOVE;
             });
         };
@@ -479,10 +468,6 @@ export class QuakeManager {
             : null;
 
         if (actor) {
-            // Keep the client's initial placement invisible until the first
-            // Quake geometry has settled.
-            actor.set_opacity(0);
-
             this._clearFirstFrameWatch(entryId);
             actor.connectObject('first-frame', () => {
                 this._clearFirstFrameWatch(entryId);
@@ -727,12 +712,7 @@ export class QuakeManager {
         return !!(actor && actor.visible);
     }
 
-    private _show(
-        entryId: string,
-        win: Meta.Window,
-        entry: QuakeEntry,
-        applyGeometry = true,
-    ): void {
+    private _show(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
         if (this._animating.has(entryId))
             return;
         if (!this._isWindowAlive(win)) {
@@ -759,8 +739,7 @@ export class QuakeManager {
             win.unminimize();
         }
 
-        if (applyGeometry)
-            this._applyQuakeGeometry(entryId, win, entry, false);
+        this._applyQuakeGeometry(entryId, win, entry, false);
 
         if (!this._isWindowAlive(win)) {
             this._detachWindow(entryId, true);
@@ -968,24 +947,6 @@ export class QuakeManager {
 
     private _normalizeAppId(appId: string): string {
         return appId.trim().replace(/\.desktop$/i, '').toLowerCase();
-    }
-
-    private _laterAdd(when: Meta.LaterType, callback: () => boolean): number {
-        const laters = global.compositor.get_laters();
-        let laterId = 0;
-        laterId = laters.add(when, () => {
-            this._laterIds.delete(laterId);
-            return callback();
-        });
-        this._laterIds.add(laterId);
-        return laterId;
-    }
-
-    private _clearLaters(): void {
-        const laters = global.compositor.get_laters();
-        for (const laterId of this._laterIds)
-            laters.remove(laterId);
-        this._laterIds.clear();
     }
 
     private _idleAdd(priority: number, callback: () => boolean): number {
