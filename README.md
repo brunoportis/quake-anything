@@ -54,6 +54,7 @@ add an entry, and set:
 | **Side** | Top / bottom / left / right |
 | **Keyboard shortcut** | Toggle show/hide (Esc cancels, Backspace clears; conflicts are warned) |
 | **Default size** | Percentage of the monitor work area (10–90%) |
+| **Top crop** | Pixels hidden from the top of the window; useful for client-side PWA/browser chrome (`0` disables) |
 
 Press the shortcut to spawn. Press again to hide. Press again to show at the
 Quake edge and size.
@@ -61,7 +62,7 @@ Quake edge and size.
 ## Features
 
 - Dock any installed GUI app to **top**, **bottom**, **left**, or **right**
-- Multiple apps, each with its own shortcut and size
+- Multiple apps, each with its own shortcut, size, and optional top crop
 - Default size as a **percentage** of the monitor work area, so cross-monitor
   moves keep the ratio rather than a fixed pixel size
 - First spawn appears on the monitor under the mouse pointer; later toggles
@@ -76,8 +77,9 @@ Quake edge and size.
 
 - On Wayland, reloading GNOME Shell requires logging out and back in. You can
   often reload just this extension with disable → enable.
-- Client-side window buttons (minimize/maximize) stay visible for many apps;
-  GNOME does not let extensions remove them reliably.
+- Client-side window chrome cannot be removed by GNOME reliably. **Top crop**
+  hides it visually for Quake windows while keeping the application itself
+  unchanged.
 - Some single-instance apps may not open a second window when one is already
   running.
 
