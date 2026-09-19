@@ -7,13 +7,13 @@ export interface QuakeEntry {
     shortcut: string;
     sizePercent: number;
     topCrop: number;
-    monitorIndex: number | null;
+    monitorConnector: string | null;
 }
 
 /** GVariant unpack shape for entries key: a(ssssi) */
 export type QuakeEntryTuple = [string, string, string, string, number];
 export type QuakeTopCropTuple = [string, number];
-export type QuakeMonitorTuple = [string, number];
+export type QuakeMonitorTuple = [string, string];
 
 export function isQuakeSide(value: string): value is QuakeSide {
     return value === 'top' || value === 'bottom' || value === 'left' || value === 'right';
@@ -38,16 +38,14 @@ export function parseEntries(
         );
     }
 
-    const monitorById = new Map<string, number>();
+    const monitorById = new Map<string, string>();
     for (const tuple of monitors) {
         if (!Array.isArray(tuple) || tuple.length < 2)
             continue;
-        const [id, rawMonitor] = tuple;
-        if (!id)
+        const [id, connector] = tuple;
+        if (!id || !connector)
             continue;
-        const monitorIndex = Math.round(Number(rawMonitor));
-        if (Number.isFinite(monitorIndex) && monitorIndex >= 0)
-            monitorById.set(id, monitorIndex);
+        monitorById.set(id, connector);
     }
 
     const entries: QuakeEntry[] = [];
@@ -65,7 +63,7 @@ export function parseEntries(
             shortcut: shortcut ?? '',
             sizePercent: Math.min(90, Math.max(10, Number.isFinite(percent) ? percent : 40)),
             topCrop: cropById.get(id) ?? 0,
-            monitorIndex: monitorById.get(id) ?? null,
+            monitorConnector: monitorById.get(id) ?? null,
         });
     }
     return entries;
@@ -89,8 +87,9 @@ export function entriesToTopCropTuples(entries: QuakeEntry[]): QuakeTopCropTuple
 
 export function entriesToMonitorTuples(entries: QuakeEntry[]): QuakeMonitorTuple[] {
     return entries
-        .filter((e): e is QuakeEntry & {monitorIndex: number} => e.monitorIndex !== null)
-        .map(e => [e.id, e.monitorIndex]);
+        .filter((e): e is QuakeEntry & {monitorConnector: string} =>
+            e.monitorConnector !== null)
+        .map(e => [e.id, e.monitorConnector]);
 }
 
 export function createEntryId(): string {
