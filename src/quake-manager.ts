@@ -22,7 +22,7 @@ const PERSISTENT_WINDOWS = new Map<number, string>();
 const PERSISTENT_PERCENT = new Map<string, number>();
 const PERSISTENT_MONITOR = new Map<string, number>();
 
-const ANIM_MS = 180;
+const ANIM_MS = 240;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
 
