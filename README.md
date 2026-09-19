@@ -52,6 +52,7 @@ add an entry, and set:
 |--------|---------|
 | **Application** | Any installed GUI app |
 | **Side** | Top / bottom / left / right |
+| **Monitor** | Automatic, or a specific connected monitor |
 | **Keyboard shortcut** | Toggle show/hide (Esc cancels, Backspace clears; conflicts are warned) |
 | **Default size** | Percentage of the monitor work area (10–90%) |
 | **Top crop** | Pixels hidden from the top of the window; useful for client-side PWA/browser chrome (`0` disables) |
@@ -62,7 +63,7 @@ Quake edge and size.
 ## Features
 
 - Dock any installed GUI app to **top**, **bottom**, **left**, or **right**
-- Multiple apps, each with its own shortcut, size, and optional top crop
+- Multiple apps, each with its own shortcut, monitor, size, and optional top crop
 - Default size as a **percentage** of the monitor work area, so cross-monitor
   moves keep the ratio rather than a fixed pixel size
 - First spawn appears on the monitor under the mouse pointer; later toggles
