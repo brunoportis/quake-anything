@@ -20,9 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mutter's current window monitor after reload/re-enable.
 - First-spawn monitor selection now uses Mutter's authoritative current-monitor
   value instead of re-deriving it from pointer coordinates.
-- Explicit monitor placement uses a short one-shot startup guard: if an app
-  restores itself onto a different monitor after the first map, Quake corrects
-  that first monitor escape exactly once without creating a reactive move loop.
+- Explicit monitor placement uses a bounded startup position guard. Chrome's
+  restore-position burst is debounced, then Quake disconnects the watcher before
+  performing one corrective move, avoiding recursive position-change loops.
 
 - Top crop is reapplied to already-visible and reclaimed windows when settings
   change or the extension is re-enabled.
