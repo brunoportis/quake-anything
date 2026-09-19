@@ -16,5 +16,15 @@
         dock side, keyboard shortcut, and default size percentage.
       </description>
     </key>
+
+    <key name="top-crops" type="a(si)">
+      <default>[]</default>
+      <summary>Per-entry top crop</summary>
+      <description>
+        Optional number of pixels to crop from the top of each Quake window,
+        stored as entry-id and pixel-count pairs. Zero is represented by the
+        absence of an entry.
+      </description>
+    </key>
   </schema>
 </schemalist>
