@@ -86,7 +86,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         this._topCropsChangedId = settings.connect('changed::top-crops', () => {
             this._rebuildList();
         });
-        this._monitorsChangedId = settings.connect('changed::monitors', () => {
+        this._monitorsChangedId = settings.connect('changed::monitor-connectors', () => {
             this._rebuildList();
         });
         window.connect('close-request', () => {
@@ -159,12 +159,8 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
             `${entry.sizePercent}%`,
             shortcut,
         ];
-        if (entry.monitorIndex !== null) {
-            details.push(formatMessage(
-                _('Monitor %s'),
-                String(entry.monitorIndex + 1),
-            ));
-        }
+        if (entry.monitorConnector !== null)
+            details.push(entry.monitorConnector);
         if (entry.topCrop > 0) {
             details.push(formatMessage(
                 _('Top crop %s px'),
@@ -241,7 +237,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         let shortcut = existing?.shortcut ?? '';
         let sizePercent = existing?.sizePercent ?? 40;
         let topCrop = existing?.topCrop ?? 0;
-        let monitorIndex = existing?.monitorIndex ?? null;
+        let monitorConnector = existing?.monitorConnector ?? null;
 
         const appRow = new Adw.ActionRow({
             title: _('Application'),
@@ -268,29 +264,58 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         group.add(appRow);
 
         const display = Gdk.Display.get_default();
-        const connectedMonitorCount = display?.get_monitors().get_n_items() ?? 1;
-        const monitorCount = Math.max(
-            connectedMonitorCount,
-            monitorIndex !== null ? monitorIndex + 1 : 0,
-        );
+        const monitorChoices: {connector: string; title: string}[] = [];
+        const monitorList = display?.get_monitors();
+        const monitorCount = monitorList?.get_n_items() ?? 0;
+
+        for (let index = 0; index < monitorCount; index++) {
+            const monitor = monitorList?.get_item(index) as Gdk.Monitor | null;
+            const connector = monitor?.get_connector();
+            if (!monitor || !connector)
+                continue;
+
+            const description = monitor.get_description()
+                ?? monitor.get_model()
+                ?? connector;
+            monitorChoices.push({
+                connector,
+                title: `${description} · ${connector}`,
+            });
+        }
+
+        // Keep a disconnected configured monitor visible in the editor instead
+        // of silently changing the saved value.
+        if (
+            monitorConnector !== null &&
+            !monitorChoices.some(choice => choice.connector === monitorConnector)
+        ) {
+            monitorChoices.push({
+                connector: monitorConnector,
+                title: formatMessage(_('%s · disconnected'), monitorConnector),
+            });
+        }
+
         const monitorTitles = [
             _('Automatic'),
-            ...Array.from(
-                {length: monitorCount},
-                (_unused, index) => formatMessage(_('Monitor %s'), String(index + 1)),
-            ),
+            ...monitorChoices.map(choice => choice.title),
         ];
+        const selectedMonitor = monitorConnector === null
+            ? 0
+            : Math.max(
+                0,
+                monitorChoices.findIndex(choice => choice.connector === monitorConnector) + 1,
+            );
         const monitorModel = Gtk.StringList.new(monitorTitles);
         const monitorRow = new Adw.ComboRow({
             title: _('Monitor'),
             subtitle: _('Choose where this Quake window is docked'),
             model: monitorModel,
-            selected: monitorIndex === null ? 0 : monitorIndex + 1,
+            selected: selectedMonitor,
         });
         monitorRow.connect('notify::selected', () => {
-            monitorIndex = monitorRow.selected === 0
+            monitorConnector = monitorRow.selected === 0
                 ? null
-                : monitorRow.selected - 1;
+                : monitorChoices[monitorRow.selected - 1]?.connector ?? null;
         });
         group.add(monitorRow);
 
@@ -407,7 +432,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
                 shortcut,
                 sizePercent: Math.min(90, Math.max(10, sizePercent)),
                 topCrop: Math.min(160, Math.max(0, topCrop)),
-                monitorIndex,
+                monitorConnector,
             };
 
             const idx = entries.findIndex(e => e.id === next.id);
@@ -549,7 +574,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         const raw = settings.get_value('entries').deep_unpack() as QuakeEntryTuple[];
         const topCrops = settings.get_value('top-crops')
             .deep_unpack() as QuakeTopCropTuple[];
-        const monitors = settings.get_value('monitors')
+        const monitors = settings.get_value('monitor-connectors')
             .deep_unpack() as QuakeMonitorTuple[];
         return parseEntries(raw, topCrops, monitors);
     }
@@ -559,7 +584,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         settings.set_value('top-crops', new GLib.Variant('a(si)', topCrops));
 
         const monitors = entriesToMonitorTuples(entries);
-        settings.set_value('monitors', new GLib.Variant('a(si)', monitors));
+        settings.set_value('monitor-connectors', new GLib.Variant('a(ss)', monitors));
 
         const tuples = entriesToTuples(entries);
         settings.set_value('entries', new GLib.Variant('a(ssssi)', tuples));
