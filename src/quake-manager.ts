@@ -666,7 +666,13 @@ export class QuakeManager {
         }
 
         const offset = slideOffsetForSide(entry.side, rect);
+        const bufferRect = win.get_buffer_rect();
 
+        // skipNextEffect() completes unminimize without running Shell's normal
+        // actor-position animation. Sync the compositor actor explicitly to
+        // Mutter's authoritative buffer geometry before our slide-in starts.
+        actor.set_position(bufferRect.x, bufferRect.y);
+        actor.set_size(bufferRect.width, bufferRect.height);
         actor.set_translation(offset.x, offset.y, 0);
         actor.set_opacity(255);
         win.activate(global.get_current_time());
@@ -676,6 +682,12 @@ export class QuakeManager {
             windowId: win.get_id(),
             side: entry.side,
             offset,
+            bufferRect: {
+                x: bufferRect.x,
+                y: bufferRect.y,
+                width: bufferRect.width,
+                height: bufferRect.height,
+            },
             actorX: actor.x,
             actorY: actor.y,
             actorWidth: actor.width,
@@ -722,13 +734,14 @@ export class QuakeManager {
 
         const offset = slideOffsetForSide(entry.side, rect);
 
-        // Capture the visual geometry before paint_to_content() or minimize can
-        // trigger a Mutter geometry sync.
+        // Meta.Window geometry is authoritative. Meta.WindowActor can briefly
+        // retain stale coordinates across unminimize/geometry synchronization.
+        const bufferRect = win.get_buffer_rect();
         const snapshotRect = {
-            x: actor.x,
-            y: actor.y,
-            width: actor.width,
-            height: actor.height,
+            x: bufferRect.x,
+            y: bufferRect.y,
+            width: bufferRect.width,
+            height: bufferRect.height,
         };
 
         console.log('[quake-hide] request', JSON.stringify({
