@@ -38,6 +38,13 @@ interface FirstFrameWatch {
     fallbackId: number;
 }
 
+interface StartupMonitorGuard {
+    win: Meta.Window;
+    signalId: number;
+    expiryId: number;
+    correctionId: number;
+}
+
 interface HideSnapshotState {
     entryId: string;
     visual: Clutter.Actor;
@@ -63,7 +70,7 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
-    private _startupMonitorGuardIds = new Map<string, number>();
+    private _startupMonitorGuards = new Map<string, StartupMonitorGuard>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -108,8 +115,8 @@ export class QuakeManager {
 
         this._clearHideSnapshots();
         this._clearPending();
+        this._clearStartupMonitorGuards();
         this._clearSources();
-        this._startupMonitorGuardIds.clear();
         for (const id of [...this._windows.keys()])
             this._detachWindow(id, false);
         this._entries.clear();
@@ -461,7 +468,7 @@ export class QuakeManager {
                     return GLib.SOURCE_REMOVE;
 
                 if (this._configuredMonitor(entry) !== null)
-                    this._startStartupMonitorGuard(entryId);
+                    this._startStartupMonitorGuard(entryId, win);
 
                 this._applyQuakeGeometry(entryId, win, entry, true);
                 this._show(entryId, win, entry);
@@ -584,37 +591,120 @@ export class QuakeManager {
         return sanitizeMonitorIndex(rawMonitor);
     }
 
-    private _startStartupMonitorGuard(entryId: string): void {
+    private _startStartupMonitorGuard(
+        entryId: string,
+        win: Meta.Window,
+    ): void {
         this._clearStartupMonitorGuard(entryId);
 
-        const timeoutId = this._timeoutAdd(
+        let signalId = 0;
+        const expiryId = this._timeoutAdd(
             GLib.PRIORITY_DEFAULT,
             5000,
             () => {
-                this._startupMonitorGuardIds.delete(entryId);
+                const guard = this._startupMonitorGuards.get(entryId);
+                if (guard?.win === win) {
+                    this._startupMonitorGuards.delete(entryId);
+                    if (guard.signalId)
+                        win.disconnect(guard.signalId);
+                }
                 return GLib.SOURCE_REMOVE;
             },
         );
-        this._startupMonitorGuardIds.set(entryId, timeoutId);
-    }
 
-    private _consumeStartupMonitorGuard(entryId: string): boolean {
-        const timeoutId = this._startupMonitorGuardIds.get(entryId);
-        if (timeoutId === undefined)
-            return false;
+        signalId = win.connect('position-changed', () => {
+            const guard = this._startupMonitorGuards.get(entryId);
+            if (!guard || guard.win !== win)
+                return;
+            if (
+                this._applyingGeometry.has(entryId) ||
+                !this._isWindowAlive(win)
+            )
+                return;
 
-        this._startupMonitorGuardIds.delete(entryId);
-        this._removeSource(timeoutId);
-        return true;
+            const entry = this._entries.get(entryId);
+            if (!entry) {
+                this._clearStartupMonitorGuard(entryId);
+                return;
+            }
+
+            const configuredMonitor = this._configuredMonitor(entry);
+            if (configuredMonitor === null) {
+                this._clearStartupMonitorGuard(entryId);
+                return;
+            }
+
+            if (sanitizeMonitorIndex(win.get_monitor()) === configuredMonitor)
+                return;
+
+            // Chrome can emit several position changes while restoring its saved
+            // bounds. Debounce that burst, then disconnect the watcher before
+            // doing exactly one corrective move.
+            if (guard.correctionId)
+                this._removeSource(guard.correctionId);
+
+            guard.correctionId = this._timeoutAdd(
+                GLib.PRIORITY_DEFAULT,
+                200,
+                () => {
+                    const currentGuard = this._startupMonitorGuards.get(entryId);
+                    if (!currentGuard || currentGuard.win !== win)
+                        return GLib.SOURCE_REMOVE;
+
+                    currentGuard.correctionId = 0;
+
+                    const currentEntry = this._entries.get(entryId);
+                    if (!currentEntry || !this._isWindowAlive(win)) {
+                        this._clearStartupMonitorGuard(entryId);
+                        return GLib.SOURCE_REMOVE;
+                    }
+
+                    const targetMonitor = this._configuredMonitor(currentEntry);
+                    if (
+                        targetMonitor !== null &&
+                        sanitizeMonitorIndex(win.get_monitor()) !== targetMonitor
+                    ) {
+                        this._clearStartupMonitorGuard(entryId);
+                        this._applyQuakeGeometry(entryId, win, currentEntry, false);
+                    }
+
+                    return GLib.SOURCE_REMOVE;
+                },
+            );
+        });
+
+        this._startupMonitorGuards.set(entryId, {
+            win,
+            signalId,
+            expiryId,
+            correctionId: 0,
+        });
     }
 
     private _clearStartupMonitorGuard(entryId: string): void {
-        const timeoutId = this._startupMonitorGuardIds.get(entryId);
-        if (timeoutId === undefined)
+        const guard = this._startupMonitorGuards.get(entryId);
+        if (!guard)
             return;
 
-        this._startupMonitorGuardIds.delete(entryId);
-        this._removeSource(timeoutId);
+        this._startupMonitorGuards.delete(entryId);
+
+        if (guard.signalId) {
+            try {
+                guard.win.disconnect(guard.signalId);
+            } catch {
+                // Window can already be unmanaged while cleanup runs.
+            }
+        }
+
+        if (guard.expiryId)
+            this._removeSource(guard.expiryId);
+        if (guard.correctionId)
+            this._removeSource(guard.correctionId);
+    }
+
+    private _clearStartupMonitorGuards(): void {
+        for (const entryId of [...this._startupMonitorGuards.keys()])
+            this._clearStartupMonitorGuard(entryId);
     }
 
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
@@ -635,27 +725,6 @@ export class QuakeManager {
         if (configuredMonitor !== null) {
             this._lastMonitor.set(entryId, configuredMonitor);
             PERSISTENT_MONITOR.set(entryId, configuredMonitor);
-
-            // Chromium may restore its previous monitor after our initial map.
-            // During the short startup guard, correct the first escape exactly
-            // once. Consume the guard before moving so our own monitor-enter
-            // event cannot recurse.
-            if (
-                safeIndex !== configuredMonitor &&
-                this._consumeStartupMonitorGuard(entryId)
-            ) {
-                this._timeoutAdd(GLib.PRIORITY_DEFAULT, 100, () => {
-                    if (
-                        this._windows.get(entryId) === win &&
-                        this._isWindowAlive(win)
-                    ) {
-                        const currentEntry = this._entries.get(entryId);
-                        if (currentEntry)
-                            this._applyQuakeGeometry(entryId, win, currentEntry, false);
-                    }
-                    return GLib.SOURCE_REMOVE;
-                });
-            }
             return;
         }
         if (win.minimized || !this._isVisible(win)) {
