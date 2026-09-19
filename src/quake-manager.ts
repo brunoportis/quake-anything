@@ -729,10 +729,39 @@ export class QuakeManager {
         actor.set_opacity(255);
         actor.set_pivot_point(0, 0);
 
+        let visual: Clutter.Actor | null = null;
+        try {
+            const snapshot = actor.paint_to_content(null);
+            const parent = actor.get_parent();
+
+            if (snapshot && parent) {
+                visual = new Clutter.Actor({
+                    x: actor.x,
+                    y: actor.y,
+                    width: actor.width,
+                    height: actor.height,
+                    reactive: false,
+                    visible: false,
+                });
+                visual.set_content(snapshot);
+                parent.add_child(visual);
+
+                console.log('[quake-hide] snapshot-prepared', JSON.stringify({
+                    windowId: win.get_id(),
+                    x: visual.x,
+                    y: visual.y,
+                    width: visual.width,
+                    height: visual.height,
+                }));
+            }
+        } catch (e) {
+            console.warn('[quake-anything] pre-minimize snapshot failed; using live actor', e);
+        }
+
         this._nativeHideActors.set(actor, {
             entryId,
             offset,
-            visual: null,
+            visual,
             shellwm: null,
             completed: false,
         });
@@ -768,6 +797,10 @@ export class QuakeManager {
             console.log('[quake-hide] shell-did-not-animate', JSON.stringify({
                 windowId: (actor.meta_window?.get_id() ?? null),
             }));
+
+            if (state.visual && state.visual !== actor)
+                state.visual.destroy();
+
             this._nativeHideActors.delete(actor);
             this._animating.delete(state.entryId);
             return;
@@ -783,56 +816,27 @@ export class QuakeManager {
         actor.set_opacity(255);
         actor.set_pivot_point(0, 0);
 
-        // Prefer a static snapshot. Mutter can finish minimizing the real
-        // window immediately while this independent actor slides off-screen.
-        try {
-            const content = actor.paint_to_content(null);
-            const parent = actor.get_parent();
+        // The snapshot was captured before win.minimize(), while the actor
+        // still had its on-screen geometry. By this point GNOME Shell has
+        // already assigned the stock minimize destination to the real actor.
+        // Animate the pre-captured visual instead.
+        if (state.visual) {
+            state.visual.show();
 
-            console.log('[quake-hide] snapshot-probe', JSON.stringify({
+            console.log('[quake-hide] snapshot-ready', JSON.stringify({
                 windowId: (actor.meta_window?.get_id() ?? null),
-                hasContent: !!content,
-                hasParent: !!parent,
-                parentName: parent?.name ?? null,
+                x: state.visual.x,
+                y: state.visual.y,
+                width: state.visual.width,
+                height: state.visual.height,
+                visible: state.visual.visible,
+                opacity: state.visual.opacity,
             }));
 
-            if (content && parent) {
-                const visual = new Clutter.Actor({
-                    x: actor.x,
-                    y: actor.y,
-                    width: actor.width,
-                    height: actor.height,
-                    reactive: false,
-                });
-                visual.set_content(content);
-                parent.add_child(visual);
-
-                state.visual = visual;
-                console.log('[quake-hide] snapshot-created', JSON.stringify({
-                    windowId: (actor.meta_window?.get_id() ?? null),
-                    x: visual.x,
-                    y: visual.y,
-                    width: visual.width,
-                    height: visual.height,
-                    visible: visual.visible,
-                    opacity: visual.opacity,
-                }));
-
-                state.completed = true;
-                shellwm.completed_minimize(actor);
-
-                console.log('[quake-hide] native-completed-snapshot-still-present', JSON.stringify({
-                    windowId: (actor.meta_window?.get_id() ?? null),
-                    visible: visual.visible,
-                    opacity: visual.opacity,
-                    parentName: visual.get_parent()?.name ?? null,
-                }));
-
-                this._animateNativeHide(actor, state, visual);
-                return;
-            }
-        } catch (e) {
-            console.warn('[quake-anything] window snapshot failed; using live actor', e);
+            state.completed = true;
+            shellwm.completed_minimize(actor);
+            this._animateNativeHide(actor, state, state.visual);
+            return;
         }
 
         // Snapshotting can fail for unusual surfaces. Keep the real actor
