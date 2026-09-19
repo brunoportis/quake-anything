@@ -677,24 +677,9 @@ export class QuakeManager {
         actor.set_opacity(255);
         win.activate(global.get_current_time());
 
-        console.log('[quake-show] animation-start', JSON.stringify({
-            entryId,
-            windowId: win.get_id(),
-            side: entry.side,
-            offset,
-            bufferRect: {
-                x: bufferRect.x,
-                y: bufferRect.y,
-                width: bufferRect.width,
-                height: bufferRect.height,
-            },
-            actorX: actor.x,
-            actorY: actor.y,
-            actorWidth: actor.width,
-            actorHeight: actor.height,
-        }));
-
         this._animating.add(entryId);
+        // GJS/Clutter expects GObject property names here. The bundled
+        // TypeScript typings expose camelCase aliases instead, hence the cast.
         actor.ease({
             translation_x: 0,
             translation_y: 0,
@@ -744,14 +729,6 @@ export class QuakeManager {
             height: bufferRect.height,
         };
 
-        console.log('[quake-hide] request', JSON.stringify({
-            entryId,
-            windowId: win.get_id(),
-            side: entry.side,
-            offset,
-            snapshotRect,
-        }));
-
         try {
             const content = actor.paint_to_content(null);
             const parent = actor.get_parent();
@@ -772,31 +749,19 @@ export class QuakeManager {
             this._hideSnapshots.set(actor, {entryId, visual});
             this._animating.add(entryId);
 
-            console.log('[quake-hide] snapshot-created', JSON.stringify({
-                windowId: win.get_id(),
-                x: visual.x,
-                y: visual.y,
-                width: visual.width,
-                height: visual.height,
-                offset,
-            }));
-
             // Keep the real window mapped but invisible while the independent
             // snapshot performs the whole visual transition. Only after the
             // snapshot reaches the edge do we ask Mutter to minimize, with its
             // native effect explicitly skipped.
             actor.set_opacity(0);
 
+            // Clutter.ease() uses GObject property names at runtime.
             visual.ease({
                 translation_x: offset.x,
                 translation_y: offset.y,
                 duration: HIDE_ANIM_MS,
                 mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
                 onStopped: () => {
-                    console.log('[quake-hide] animation-finished', JSON.stringify({
-                        windowId: win.get_id(),
-                    }));
-
                     if (this._windows.get(entryId) === win && this._isWindowAlive(win)) {
                         (Main.wm as unknown as WindowManagerEffects)
                             .skipNextEffect(actor);
