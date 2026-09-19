@@ -37,16 +37,9 @@ interface FirstFrameWatch {
     fallbackId: number;
 }
 
-interface NativeHideState {
+interface HideSnapshotState {
     entryId: string;
-    offset: {x: number; y: number};
-    visual: Clutter.Actor | null;
-    shellwm: Shell.WM | null;
-    completed: boolean;
-}
-
-interface WindowManagerInternals {
-    _minimizing: Set<Meta.WindowActor>;
+    visual: Clutter.Actor;
 }
 
 /** Shell 49+: unmaximize with no flags argument. */
@@ -65,8 +58,7 @@ export class QuakeManager {
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
-    private _nativeHideActors = new Map<Meta.WindowActor, NativeHideState>();
-    private _minimizeSignalId: number | null = null;
+    private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
     enable(): void {
         global.display.connectObject(
@@ -76,16 +68,6 @@ export class QuakeManager {
             (_d: Meta.Display, monitorIndex: number, win: Meta.Window) =>
                 this._onEnteredMonitor(monitorIndex, win),
             this,
-        );
-
-        // Run after GNOME Shell's normal minimize handler so we can cancel only
-        // the transition for a Quake-initiated minimize and finish it ourselves.
-        this._minimizeSignalId = global.window_manager.connect(
-            'minimize',
-            (shellwm, actor) => this._onNativeMinimize(
-                shellwm as Shell.WM,
-                actor as Meta.WindowActor,
-            ),
         );
 
         // Claim previously spawned windows after suspend/disable
@@ -117,12 +99,7 @@ export class QuakeManager {
     disable(): void {
         global.display.disconnectObject(this);
 
-        if (this._minimizeSignalId !== null) {
-            global.window_manager.disconnect(this._minimizeSignalId);
-            this._minimizeSignalId = null;
-        }
-
-        this._completePendingNativeHides();
+        this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
         for (const id of [...this._windows.keys()])
@@ -133,7 +110,7 @@ export class QuakeManager {
         this._applyingGeometry.clear();
         this._animating.clear();
         this._firstFrameWatches.clear();
-        this._nativeHideActors.clear();
+        this._hideSnapshots.clear();
     }
 
     setEntries(entries: QuakeEntry[]): void {
@@ -490,7 +467,7 @@ export class QuakeManager {
         if (win && this._isWindowAlive(win)) {
             const actor = win.get_compositor_private() as Meta.WindowActor | null;
             if (actor) {
-                this._cancelNativeHide(actor, false);
+                this._clearHideSnapshot(actor);
                 actor.remove_all_transitions();
                 actor.set_translation(0, 0, 0);
                 actor.set_scale(1, 1);
@@ -723,214 +700,98 @@ export class QuakeManager {
         }
 
         const offset = slideOffsetForSide(entry.side, rect);
-        actor.remove_all_transitions();
-        actor.set_translation(0, 0, 0);
-        actor.set_scale(1, 1);
-        actor.set_opacity(255);
-        actor.set_pivot_point(0, 0);
 
-        let visual: Clutter.Actor | null = null;
+        // Capture the visual geometry before paint_to_content() or minimize can
+        // trigger a Mutter geometry sync.
+        const snapshotRect = {
+            x: actor.x,
+            y: actor.y,
+            width: actor.width,
+            height: actor.height,
+        };
+
+        console.log('[quake-hide] request', JSON.stringify({
+            entryId,
+            windowId: win.get_id(),
+            side: entry.side,
+            offset,
+            snapshotRect,
+        }));
+
         try {
-            const snapshot = actor.paint_to_content(null);
+            const content = actor.paint_to_content(null);
             const parent = actor.get_parent();
 
-            if (snapshot && parent) {
-                visual = new Clutter.Actor({
-                    x: actor.x,
-                    y: actor.y,
-                    width: actor.width,
-                    height: actor.height,
-                    reactive: false,
-                    visible: false,
-                });
-                visual.set_content(snapshot);
-                parent.add_child(visual);
+            if (!content || !parent)
+                throw new Error('snapshot content or parent unavailable');
 
-                console.log('[quake-hide] snapshot-prepared', JSON.stringify({
-                    windowId: win.get_id(),
-                    x: visual.x,
-                    y: visual.y,
-                    width: visual.width,
-                    height: visual.height,
-                }));
-            }
+            const visual = new Clutter.Actor({
+                x: snapshotRect.x,
+                y: snapshotRect.y,
+                width: snapshotRect.width,
+                height: snapshotRect.height,
+                reactive: false,
+            });
+            visual.set_content(content);
+            parent.add_child(visual);
+
+            this._hideSnapshots.set(actor, {entryId, visual});
+            this._animating.add(entryId);
+
+            console.log('[quake-hide] snapshot-created', JSON.stringify({
+                windowId: win.get_id(),
+                x: visual.x,
+                y: visual.y,
+                width: visual.width,
+                height: visual.height,
+                offset,
+            }));
+
+            // Let Mutter perform its normal minimize lifecycle, but make the
+            // real actor invisible while our independent snapshot is on stage.
+            // The stock minimize animation therefore cannot visually compete.
+            actor.set_opacity(0);
+            win.minimize();
+
+            visual.ease({
+                translationX: offset.x,
+                translationY: offset.y,
+                duration: HIDE_ANIM_MS,
+                mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
+                onStopped: () => {
+                    console.log('[quake-hide] animation-finished', JSON.stringify({
+                        windowId: win.get_id(),
+                    }));
+                    this._clearHideSnapshot(actor);
+                },
+            });
         } catch (e) {
-            console.warn('[quake-anything] pre-minimize snapshot failed; using live actor', e);
+            console.warn('[quake-anything] hide snapshot failed; using native minimize', e);
+            actor.set_opacity(255);
+            win.minimize();
         }
-
-        this._nativeHideActors.set(actor, {
-            entryId,
-            offset,
-            visual,
-            shellwm: null,
-            completed: false,
-        });
-        this._animating.add(entryId);
-
-        // This emits Shell.WM::minimize. _onNativeMinimize() runs after the
-        // Shell's default handler, cancels that transition, and performs the
-        // Quake slide before calling completed_minimize().
-        win.minimize();
     }
 
-    private _onNativeMinimize(shellwm: Shell.WM, actor: Meta.WindowActor): void {
-        const state = this._nativeHideActors.get(actor);
+    private _clearHideSnapshot(actor: Meta.WindowActor): void {
+        const state = this._hideSnapshots.get(actor);
         if (!state)
             return;
 
-        const wm = Main.wm as unknown as WindowManagerInternals;
-        console.log('[quake-hide] native-minimize', JSON.stringify({
-            windowId: (actor.meta_window?.get_id() ?? null),
-            minimizing: wm._minimizing.has(actor),
-            actorVisible: actor.visible,
-            actorOpacity: actor.opacity,
-            actorX: actor.x,
-            actorY: actor.y,
-            actorWidth: actor.width,
-            actorHeight: actor.height,
-        }));
-
-        // The Shell's handler is connected before this extension. If it chose
-        // not to animate, the minimize has already been completed; respect
-        // that and just clear our bookkeeping.
-        if (!wm._minimizing.has(actor)) {
-            console.log('[quake-hide] shell-did-not-animate', JSON.stringify({
-                windowId: (actor.meta_window?.get_id() ?? null),
-            }));
-
-            if (state.visual && state.visual !== actor)
-                state.visual.destroy();
-
-            this._nativeHideActors.delete(actor);
-            this._animating.delete(state.entryId);
-            return;
-        }
-
-        // Steal the in-flight stock effect. Removing it from _minimizing first
-        // makes the Shell's onStopped callback a no-op when transitions are
-        // cancelled below.
-        wm._minimizing.delete(actor);
-        actor.remove_all_transitions();
-        actor.set_translation(0, 0, 0);
-        actor.set_scale(1, 1);
-        actor.set_opacity(255);
-        actor.set_pivot_point(0, 0);
-
-        // The snapshot was captured before win.minimize(), while the actor
-        // still had its on-screen geometry. By this point GNOME Shell has
-        // already assigned the stock minimize destination to the real actor.
-        // Animate the pre-captured visual instead.
-        if (state.visual) {
-            state.visual.show();
-
-            console.log('[quake-hide] snapshot-ready', JSON.stringify({
-                windowId: (actor.meta_window?.get_id() ?? null),
-                x: state.visual.x,
-                y: state.visual.y,
-                width: state.visual.width,
-                height: state.visual.height,
-                visible: state.visual.visible,
-                opacity: state.visual.opacity,
-            }));
-
-            state.completed = true;
-            shellwm.completed_minimize(actor);
-            this._animateNativeHide(actor, state, state.visual);
-            return;
-        }
-
-        // Snapshotting can fail for unusual surfaces. Keep the real actor
-        // mapped until the slide finishes as a fallback.
-        state.visual = actor;
-        state.shellwm = shellwm;
-        this._animateNativeHide(actor, state, actor);
-    }
-
-    private _animateNativeHide(
-        actor: Meta.WindowActor,
-        state: NativeHideState,
-        visual: Clutter.Actor,
-    ): void {
-        console.log('[quake-hide] animation-start', JSON.stringify({
-            windowId: (actor.meta_window?.get_id() ?? null),
-            visualIsWindowActor: visual === actor,
-            offset: state.offset,
-            visible: visual.visible,
-            opacity: visual.opacity,
-        }));
-
-        visual.remove_all_transitions();
-        visual.set_translation(0, 0, 0);
-        visual.ease({
-            translationX: state.offset.x,
-            translationY: state.offset.y,
-            duration: HIDE_ANIM_MS,
-            mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
-            onStopped: () => this._finishNativeHide(actor, state),
-        });
-    }
-
-    private _finishNativeHide(actor: Meta.WindowActor, state: NativeHideState): void {
-        if (this._nativeHideActors.get(actor) !== state)
-            return;
-
-        console.log('[quake-hide] animation-finished', JSON.stringify({
-            windowId: (actor.meta_window?.get_id() ?? null),
-            completedEarly: state.completed,
-            visualExists: !!state.visual,
-        }));
-
-        this._nativeHideActors.delete(actor);
+        this._hideSnapshots.delete(actor);
         this._animating.delete(state.entryId);
 
-        const visual = state.visual;
-        if (visual) {
-            visual.remove_all_transitions();
-            visual.set_translation(0, 0, 0);
-
-            if (visual !== actor)
-                visual.destroy();
-        }
+        state.visual.remove_all_transitions();
+        state.visual.destroy();
 
         actor.set_translation(0, 0, 0);
         actor.set_scale(1, 1);
         actor.set_opacity(255);
         actor.set_pivot_point(0, 0);
-
-        if (!state.completed)
-            (state.shellwm ?? global.window_manager).completed_minimize(actor);
     }
 
-    private _cancelNativeHide(actor: Meta.WindowActor, completeMinimize: boolean): void {
-        const state = this._nativeHideActors.get(actor);
-        if (!state)
-            return;
-
-        this._nativeHideActors.delete(actor);
-        this._animating.delete(state.entryId);
-
-        const visual = state.visual;
-        if (visual) {
-            visual.remove_all_transitions();
-            visual.set_translation(0, 0, 0);
-
-            if (visual !== actor)
-                visual.destroy();
-        }
-
-        actor.remove_all_transitions();
-        actor.set_translation(0, 0, 0);
-        actor.set_scale(1, 1);
-        actor.set_opacity(255);
-        actor.set_pivot_point(0, 0);
-
-        if (completeMinimize && !state.completed)
-            (state.shellwm ?? global.window_manager).completed_minimize(actor);
-    }
-
-    private _completePendingNativeHides(): void {
-        for (const actor of [...this._nativeHideActors.keys()])
-            this._cancelNativeHide(actor, true);
+    private _clearHideSnapshots(): void {
+        for (const actor of [...this._hideSnapshots.keys()])
+            this._clearHideSnapshot(actor);
     }
 
     private _resolveApp(appId: string): Shell.App | null {
