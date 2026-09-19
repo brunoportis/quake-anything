@@ -37,6 +37,15 @@ interface FirstFrameWatch {
     fallbackId: number;
 }
 
+interface NativeHideState {
+    entryId: string;
+    offset: {x: number; y: number};
+}
+
+interface WindowManagerInternals {
+    _minimizing: Set<Meta.WindowActor>;
+}
+
 /** Shell 49+: unmaximize with no flags argument. */
 function unmaximizeWindow(win: Meta.Window): void {
     if (win.get_maximize_flags() !== 0)
@@ -53,6 +62,8 @@ export class QuakeManager {
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
+    private _nativeHideActors = new Map<Meta.WindowActor, NativeHideState>();
+    private _minimizeSignalId: number | null = null;
 
     enable(): void {
         global.display.connectObject(
@@ -62,6 +73,13 @@ export class QuakeManager {
             (_d: Meta.Display, monitorIndex: number, win: Meta.Window) =>
                 this._onEnteredMonitor(monitorIndex, win),
             this,
+        );
+
+        // Run after GNOME Shell's normal minimize handler so we can cancel only
+        // the transition for a Quake-initiated minimize and finish it ourselves.
+        this._minimizeSignalId = global.window_manager.connect_after(
+            'minimize',
+            (_wm, actor) => this._onNativeMinimize(actor as Meta.WindowActor),
         );
 
         // Claim previously spawned windows after suspend/disable
@@ -92,6 +110,13 @@ export class QuakeManager {
 
     disable(): void {
         global.display.disconnectObject(this);
+
+        if (this._minimizeSignalId !== null) {
+            global.window_manager.disconnect(this._minimizeSignalId);
+            this._minimizeSignalId = null;
+        }
+
+        this._completePendingNativeHides();
         this._clearPending();
         this._clearSources();
         for (const id of [...this._windows.keys()])
@@ -102,6 +127,7 @@ export class QuakeManager {
         this._applyingGeometry.clear();
         this._animating.clear();
         this._firstFrameWatches.clear();
+        this._nativeHideActors.clear();
     }
 
     setEntries(entries: QuakeEntry[]): void {
@@ -456,11 +482,14 @@ export class QuakeManager {
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
-            const actor = win.get_compositor_private() as Clutter.Actor | null;
+            const actor = win.get_compositor_private() as Meta.WindowActor | null;
             if (actor) {
+                this._nativeHideActors.delete(actor);
                 actor.remove_all_transitions();
                 actor.set_translation(0, 0, 0);
+                actor.set_scale(1, 1);
                 actor.set_opacity(255);
+                actor.set_pivot_point(0, 0);
             }
         }
 
@@ -660,7 +689,7 @@ export class QuakeManager {
 
         this._rememberQuakePercent(entryId, win, entry);
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
+        const actor = win.get_compositor_private() as Meta.WindowActor | null;
         if (!actor) {
             win.minimize();
             return;
@@ -679,25 +708,75 @@ export class QuakeManager {
         const offset = slideOffsetForSide(entry.side, rect);
         actor.remove_all_transitions();
         actor.set_translation(0, 0, 0);
+        actor.set_scale(1, 1);
+        actor.set_opacity(255);
+        actor.set_pivot_point(0, 0);
+
+        this._nativeHideActors.set(actor, {entryId, offset});
         this._animating.add(entryId);
+
+        // This emits Shell.WM::minimize. _onNativeMinimize() runs after the
+        // Shell's default handler, cancels that transition, and performs the
+        // Quake slide before calling completed_minimize().
+        win.minimize();
+    }
+
+    private _onNativeMinimize(actor: Meta.WindowActor): void {
+        const state = this._nativeHideActors.get(actor);
+        if (!state)
+            return;
+
+        // GNOME Shell's _minimizeWindow() has already installed its normal
+        // scale/opacity-to-corner transition. Remove the actor from its
+        // bookkeeping first so cancelling that transition cannot complete the
+        // minimize before our slide is done.
+        const wm = Main.wm as unknown as WindowManagerInternals;
+        wm._minimizing.delete(actor);
+        actor.remove_all_transitions();
+
+        actor.set_translation(0, 0, 0);
+        actor.set_scale(1, 1);
+        actor.set_opacity(255);
+        actor.set_pivot_point(0, 0);
+
         actor.ease({
-            translationX: offset.x,
-            translationY: offset.y,
+            translationX: state.offset.x,
+            translationY: state.offset.y,
             duration: HIDE_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
-            onStopped: () => {
-                this._animating.delete(entryId);
-
-                if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
-                    return;
-
-                // Keep Mutter's regular minimize animation invisible. The
-                // opacity is restored before unminimizing in _show().
-                actor.set_opacity(0);
-                actor.set_translation(0, 0, 0);
-                win.minimize();
-            },
+            onStopped: () => this._completeNativeHide(actor, state),
         });
+    }
+
+    private _completeNativeHide(actor: Meta.WindowActor, state: NativeHideState): void {
+        if (this._nativeHideActors.get(actor) !== state)
+            return;
+
+        this._nativeHideActors.delete(actor);
+        this._animating.delete(state.entryId);
+
+        actor.remove_all_transitions();
+        actor.set_translation(0, 0, 0);
+        actor.set_scale(1, 1);
+        actor.set_opacity(255);
+        actor.set_pivot_point(0, 0);
+
+        global.window_manager.completed_minimize(actor);
+    }
+
+    private _completePendingNativeHides(): void {
+        for (const [actor, state] of this._nativeHideActors) {
+            this._nativeHideActors.delete(actor);
+            this._animating.delete(state.entryId);
+
+            actor.remove_all_transitions();
+            actor.set_translation(0, 0, 0);
+            actor.set_scale(1, 1);
+            actor.set_opacity(255);
+            actor.set_pivot_point(0, 0);
+
+            global.window_manager.completed_minimize(actor);
+        }
     }
 
     private _resolveApp(appId: string): Shell.App | null {
