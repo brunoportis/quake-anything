@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Per-entry **Top crop** setting for visually hiding client-side title bars or
   PWA/browser chrome while preserving the configured Quake viewport size.
+- Optional per-entry **Monitor** selection. Explicit monitor assignments override
+  automatic pointer/last-monitor placement and remain deterministic across login.
 
 ### Fixed
 
