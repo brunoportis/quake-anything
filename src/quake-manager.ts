@@ -751,7 +751,7 @@ export class QuakeManager {
 
         const wm = Main.wm as unknown as WindowManagerInternals;
         console.log('[quake-hide] native-minimize', JSON.stringify({
-            windowId: actor.meta_window.get_id(),
+            windowId: (actor.meta_window?.get_id() ?? null),
             minimizing: wm._minimizing.has(actor),
             actorVisible: actor.visible,
             actorOpacity: actor.opacity,
@@ -766,7 +766,7 @@ export class QuakeManager {
         // that and just clear our bookkeeping.
         if (!wm._minimizing.has(actor)) {
             console.log('[quake-hide] shell-did-not-animate', JSON.stringify({
-                windowId: actor.meta_window.get_id(),
+                windowId: (actor.meta_window?.get_id() ?? null),
             }));
             this._nativeHideActors.delete(actor);
             this._animating.delete(state.entryId);
@@ -790,7 +790,7 @@ export class QuakeManager {
             const parent = actor.get_parent();
 
             console.log('[quake-hide] snapshot-probe', JSON.stringify({
-                windowId: actor.meta_window.get_id(),
+                windowId: (actor.meta_window?.get_id() ?? null),
                 hasContent: !!content,
                 hasParent: !!parent,
                 parentName: parent?.name ?? null,
@@ -809,7 +809,7 @@ export class QuakeManager {
 
                 state.visual = visual;
                 console.log('[quake-hide] snapshot-created', JSON.stringify({
-                    windowId: actor.meta_window.get_id(),
+                    windowId: (actor.meta_window?.get_id() ?? null),
                     x: visual.x,
                     y: visual.y,
                     width: visual.width,
@@ -822,7 +822,7 @@ export class QuakeManager {
                 shellwm.completed_minimize(actor);
 
                 console.log('[quake-hide] native-completed-snapshot-still-present', JSON.stringify({
-                    windowId: actor.meta_window.get_id(),
+                    windowId: (actor.meta_window?.get_id() ?? null),
                     visible: visual.visible,
                     opacity: visual.opacity,
                     parentName: visual.get_parent()?.name ?? null,
@@ -848,7 +848,7 @@ export class QuakeManager {
         visual: Clutter.Actor,
     ): void {
         console.log('[quake-hide] animation-start', JSON.stringify({
-            windowId: actor.meta_window.get_id(),
+            windowId: (actor.meta_window?.get_id() ?? null),
             visualIsWindowActor: visual === actor,
             offset: state.offset,
             visible: visual.visible,
@@ -871,7 +871,7 @@ export class QuakeManager {
             return;
 
         console.log('[quake-hide] animation-finished', JSON.stringify({
-            windowId: actor.meta_window.get_id(),
+            windowId: (actor.meta_window?.get_id() ?? null),
             completedEarly: state.completed,
             visualExists: !!state.visual,
         }));
