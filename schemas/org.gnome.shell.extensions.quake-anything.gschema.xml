@@ -27,12 +27,12 @@
       </description>
     </key>
 
-    <key name="monitors" type="a(si)">
+    <key name="monitor-connectors" type="a(ss)">
       <default>[]</default>
-      <summary>Per-entry monitor</summary>
+      <summary>Per-entry monitor connector</summary>
       <description>
-        Optional zero-based monitor index for each Quake entry. Entries absent
-        from this list use automatic monitor selection.
+        Optional physical monitor connector for each Quake entry, such as DP-1
+        or HDMI-A-1. Entries absent from this list use automatic monitor selection.
       </description>
     </key>
   </schema>
