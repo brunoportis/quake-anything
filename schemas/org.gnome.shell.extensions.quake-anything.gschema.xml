@@ -26,5 +26,14 @@
         absence of an entry.
       </description>
     </key>
+
+    <key name="monitors" type="a(si)">
+      <default>[]</default>
+      <summary>Per-entry monitor</summary>
+      <description>
+        Optional zero-based monitor index for each Quake entry. Entries absent
+        from this list use automatic monitor selection.
+      </description>
+    </key>
   </schema>
 </schemalist>
