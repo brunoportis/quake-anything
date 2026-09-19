@@ -50,6 +50,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
     private _window: PrefsHost | null = null;
     private _settings: Gio.Settings | null = null;
     private _settingsChangedId = 0;
+    private _topCropsChangedId = 0;
     private _rows: Gtk.Widget[] = [];
 
     async fillPreferencesWindow(window: PrefsHost): Promise<void> {
@@ -78,6 +79,9 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         this._settingsChangedId = settings.connect('changed::entries', () => {
             this._rebuildList();
         });
+        this._topCropsChangedId = settings.connect('changed::top-crops', () => {
+            this._rebuildList();
+        });
         window.connect('close-request', () => {
             this._disconnectSettings();
             return false;
@@ -88,6 +92,10 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         if (this._settings && this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
+        }
+        if (this._settings && this._topCropsChangedId) {
+            this._settings.disconnect(this._topCropsChangedId);
+            this._topCropsChangedId = 0;
         }
     }
 
@@ -135,9 +143,21 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
             ? entry.shortcut.replace(/</g, '').replace(/>/g, '+')
             : _('Disabled');
 
+        const details = [
+            sideInfo?.title ?? entry.side,
+            `${entry.sizePercent}%`,
+            shortcut,
+        ];
+        if (entry.topCrop > 0) {
+            details.push(formatMessage(
+                _('Top crop %s px'),
+                String(entry.topCrop),
+            ));
+        }
+
         const row = new Adw.ActionRow({
             title,
-            subtitle: `${sideInfo?.title ?? entry.side} · ${entry.sizePercent}% · ${shortcut}`,
+            subtitle: details.join(' · '),
             activatable: true,
         });
 
@@ -301,7 +321,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
 
         const topCropRow = new Adw.SpinRow({
             title: _('Top crop'),
-            subtitle: _('Hide pixels from the top of the window (0 disables)'),
+            subtitle: _('Pixels hidden from the top edge (0 disables)'),
             adjustment: new Gtk.Adjustment({
                 lower: 0,
                 upper: 160,
