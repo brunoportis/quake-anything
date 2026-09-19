@@ -703,7 +703,7 @@ export class QuakeManager {
             onStopped: () => {
                 this._animating.delete(entryId);
             },
-        });
+        } as any);
     }
 
     private _hide(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
@@ -805,7 +805,7 @@ export class QuakeManager {
 
                     this._clearHideSnapshot(actor);
                 },
-            });
+            } as any);
         } catch (e) {
             console.warn('[quake-anything] hide snapshot failed; minimizing without animation', e);
             actor.set_opacity(255);
