@@ -426,13 +426,37 @@ export class QuakeManager {
             this._lastMonitor.delete(entryId);
         }
 
-        win.connectObject('unmanaged', () => {
-            PERSISTENT_WINDOWS.delete(win.get_id());
-            PERSISTENT_PERCENT.delete(entryId);
-            PERSISTENT_MONITOR.delete(entryId);
-            if (this._windows.get(entryId) === win)
-                this._detachWindow(entryId, true);
-        }, this);
+        win.connectObject(
+            'unmanaged', () => {
+                PERSISTENT_WINDOWS.delete(win.get_id());
+                PERSISTENT_PERCENT.delete(entryId);
+                PERSISTENT_MONITOR.delete(entryId);
+                if (this._windows.get(entryId) === win)
+                    this._detachWindow(entryId, true);
+            },
+            'size-changed', () => {
+                if (
+                    this._windows.get(entryId) !== win ||
+                    !this._isWindowAlive(win) ||
+                    !this._isVisible(win) ||
+                    this._animating.has(entryId)
+                )
+                    return;
+
+                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    const currentEntry = this._entries.get(entryId);
+                    if (
+                        currentEntry &&
+                        this._windows.get(entryId) === win &&
+                        this._isWindowAlive(win)
+                    ) {
+                        this._applyVisibleTopCrop(win, currentEntry);
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
+            },
+            this,
+        );
 
         if (isRestore) {
             const percent = PERSISTENT_PERCENT.get(entryId);
@@ -457,6 +481,7 @@ export class QuakeManager {
             this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
                     return GLib.SOURCE_REMOVE;
+
                 this._applyQuakeGeometry(entryId, win, entry, true);
                 this._show(entryId, win, entry);
                 return GLib.SOURCE_REMOVE;
@@ -539,6 +564,44 @@ export class QuakeManager {
         return null;
     }
 
+    private _configuredMonitor(entry: QuakeEntry): number | null {
+        const connector = entry.monitorConnector;
+        if (!connector)
+            return null;
+
+        const monitorIndex = global.backend
+            .get_monitor_manager()
+            .get_monitor_for_connector(connector);
+        const monitorCount = global.display.get_n_monitors();
+        if (
+            !Number.isInteger(monitorIndex) ||
+            monitorIndex < 0 ||
+            monitorIndex >= monitorCount
+        )
+            return null;
+
+        return monitorIndex;
+    }
+
+    private _monitorForEntry(
+        entryId: string,
+        win: Meta.Window,
+        entry: QuakeEntry,
+        usePointerMonitor: boolean,
+    ): number {
+        const configuredMonitor = this._configuredMonitor(entry);
+        if (configuredMonitor !== null)
+            return configuredMonitor;
+
+        const rawMonitor = usePointerMonitor
+            ? getPointerMonitorIndex()
+            : this._lastMonitor.get(entryId)
+                ?? PERSISTENT_MONITOR.get(entryId)
+                ?? win.get_monitor();
+
+        return sanitizeMonitorIndex(rawMonitor);
+    }
+
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
         const entryId = this._entryIdForWindow(win);
         if (!entryId)
@@ -553,6 +616,12 @@ export class QuakeManager {
             return;
 
         const safeIndex = sanitizeMonitorIndex(monitorIndex);
+        const configuredMonitor = this._configuredMonitor(entry);
+        if (configuredMonitor !== null) {
+            this._lastMonitor.set(entryId, configuredMonitor);
+            PERSISTENT_MONITOR.set(entryId, configuredMonitor);
+            return;
+        }
         if (win.minimized || !this._isVisible(win)) {
             this._lastMonitor.set(entryId, safeIndex);
             PERSISTENT_MONITOR.set(entryId, safeIndex);
@@ -618,9 +687,6 @@ export class QuakeManager {
         const topCrop = this._topCrop(entry);
         const bufferRect = win.get_buffer_rect();
 
-        actor.remove_all_transitions();
-        actor.set_position(bufferRect.x, bufferRect.y);
-        actor.set_size(bufferRect.width, bufferRect.height);
         this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
         actor.set_translation(0, -topCrop, 0);
     }
@@ -631,21 +697,16 @@ export class QuakeManager {
 
         const frame = win.get_frame_rect();
         const monitor = sanitizeMonitorIndex(win.get_monitor());
-        const topCrop = this._topCrop(entry);
+        const rememberedMonitor = this._configuredMonitor(entry) ?? monitor;
         const percent = percentFromRect(
             entry.side,
-            {
-                x: frame.x,
-                y: frame.y,
-                width: frame.width,
-                height: Math.max(1, frame.height - topCrop),
-            },
+            { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
             monitor,
         );
         this._livePercent.set(entryId, percent);
-        this._lastMonitor.set(entryId, monitor);
+        this._lastMonitor.set(entryId, rememberedMonitor);
         PERSISTENT_PERCENT.set(entryId, percent);
-        PERSISTENT_MONITOR.set(entryId, monitor);
+        PERSISTENT_MONITOR.set(entryId, rememberedMonitor);
     }
 
     private _applyQuakeGeometry(
@@ -658,10 +719,12 @@ export class QuakeManager {
             return;
 
         const percent = this._effectivePercent(entryId, entry);
-        const rawMonitor = usePointerMonitor
-            ? getPointerMonitorIndex()
-            : win.get_monitor();
-        const monitor = sanitizeMonitorIndex(rawMonitor);
+        const monitor = this._monitorForEntry(
+            entryId,
+            win,
+            entry,
+            usePointerMonitor,
+        );
         const rect = computeQuakeRect(entry.side, percent, monitor);
         if (!isValidRect(rect)) {
             console.error('[quake-anything] refusing invalid quake rect', rect);
@@ -679,14 +742,17 @@ export class QuakeManager {
             if (!win.located_on_workspace(workspace))
                 win.change_workspace(workspace);
 
-            const topCrop = this._topCrop(entry);
+            // Keep Meta.Window geometry identical to the pre-crop behavior.
+            // Top crop is a compositor-only effect and must not influence
+            // Mutter's placement or work-area constraints.
             win.move_resize_frame(
                 false,
                 rect.x,
                 rect.y,
                 rect.width,
-                rect.height + topCrop,
+                rect.height,
             );
+
             this._lastMonitor.set(entryId, monitor);
             PERSISTENT_MONITOR.set(entryId, monitor);
             if (!this._livePercent.has(entryId)) {
@@ -750,10 +816,11 @@ export class QuakeManager {
         }
 
         const topCrop = this._topCrop(entry);
+        const showMonitor = this._monitorForEntry(entryId, win, entry, false);
         const rect = computeQuakeRect(
             entry.side,
             this._effectivePercent(entryId, entry),
-            sanitizeMonitorIndex(win.get_monitor()),
+            showMonitor,
         );
         if (!isValidRect(rect)) {
             this._applyTopCrop(actor, topCrop);

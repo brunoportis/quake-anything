@@ -52,6 +52,7 @@ add an entry, and set:
 |--------|---------|
 | **Application** | Any installed GUI app |
 | **Side** | Top / bottom / left / right |
+| **Monitor** | Automatic, or a specific connected display identified by its connector |
 | **Keyboard shortcut** | Toggle show/hide (Esc cancels, Backspace clears; conflicts are warned) |
 | **Default size** | Percentage of the monitor work area (10–90%) |
 | **Top crop** | Pixels hidden from the top of the window; useful for client-side PWA/browser chrome (`0` disables) |
@@ -62,11 +63,11 @@ Quake edge and size.
 ## Features
 
 - Dock any installed GUI app to **top**, **bottom**, **left**, or **right**
-- Multiple apps, each with its own shortcut, size, and optional top crop
+- Multiple apps, each with its own shortcut, monitor, size, and optional top crop
 - Default size as a **percentage** of the monitor work area, so cross-monitor
   moves keep the ratio rather than a fixed pixel size
-- First spawn appears on the monitor under the mouse pointer; later toggles
-  restore the docked layout
+- With **Monitor = Automatic**, first spawn appears on the monitor under the
+  mouse pointer; an explicit monitor assignment always wins
 - While visible you can move, resize, minimize, or maximize freely — the next
   shortcut press snaps back to the Quake position
 - Only windows **spawned by this extension** are controlled; other windows of
@@ -78,8 +79,8 @@ Quake edge and size.
 - On Wayland, reloading GNOME Shell requires logging out and back in. You can
   often reload just this extension with disable → enable.
 - Client-side window chrome cannot be removed by GNOME reliably. **Top crop**
-  hides it visually for Quake windows while keeping the application itself
-  unchanged.
+  hides it as a compositor-only visual effect; it does not resize the underlying
+  application window.
 - Some single-instance apps may not open a second window when one is already
   running.
 

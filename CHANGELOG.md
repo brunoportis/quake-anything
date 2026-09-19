@@ -10,9 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Per-entry **Top crop** setting for visually hiding client-side title bars or
-  PWA/browser chrome while preserving the configured Quake viewport size.
+  PWA/browser chrome without changing the underlying Meta.Window geometry.
+- Optional per-entry **Monitor** selection. Explicit assignments are persisted
+  by display connector and resolved through Mutter at runtime.
 
 ### Fixed
+
+- Quake windows now restore to their last known monitor instead of trusting
+  Mutter's current window monitor after reload/re-enable.
+- First-spawn monitor selection now uses Mutter's authoritative current-monitor
+  value instead of re-deriving it from pointer coordinates.
+- Top crop is now compositor-only. It no longer changes Meta.Window height,
+  preventing Mutter work-area constraints from relocating cropped side windows.
+- Crop clipping is refreshed when the real window size changes, without forcing
+  a stale compositor actor size.
 
 - Top crop is reapplied to already-visible and reclaimed windows when settings
   change or the extension is re-enabled.

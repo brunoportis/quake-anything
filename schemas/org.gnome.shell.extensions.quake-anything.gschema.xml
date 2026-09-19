@@ -26,5 +26,14 @@
         absence of an entry.
       </description>
     </key>
+
+    <key name="monitor-connectors" type="a(ss)">
+      <default>[]</default>
+      <summary>Per-entry monitor connector</summary>
+      <description>
+        Optional physical monitor connector for each Quake entry, such as DP-1
+        or HDMI-A-1. Entries absent from this list use automatic monitor selection.
+      </description>
+    </key>
   </schema>
 </schemalist>
