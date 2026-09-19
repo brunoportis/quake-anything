@@ -63,6 +63,7 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
+    private _startupMonitorGuardIds = new Map<string, number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -108,6 +109,7 @@ export class QuakeManager {
         this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
+        this._startupMonitorGuardIds.clear();
         for (const id of [...this._windows.keys()])
             this._detachWindow(id, false);
         this._entries.clear();
@@ -458,26 +460,11 @@ export class QuakeManager {
                 if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
                     return GLib.SOURCE_REMOVE;
 
+                if (this._configuredMonitor(entry) !== null)
+                    this._startStartupMonitorGuard(entryId);
+
                 this._applyQuakeGeometry(entryId, win, entry, true);
                 this._show(entryId, win, entry);
-
-                // Chromium can restore its remembered monitor shortly after the
-                // first map. Let that startup work finish, then do one final,
-                // non-reactive placement for explicitly configured monitors.
-                if (this._configuredMonitor(entry) !== null) {
-                    this._timeoutAdd(GLib.PRIORITY_DEFAULT, 1000, () => {
-                        if (
-                            this._windows.get(entryId) === win &&
-                            this._isWindowAlive(win)
-                        ) {
-                            const currentEntry = this._entries.get(entryId);
-                            if (currentEntry && this._configuredMonitor(currentEntry) !== null)
-                                this._applyQuakeGeometry(entryId, win, currentEntry, false);
-                        }
-                        return GLib.SOURCE_REMOVE;
-                    });
-                }
-
                 return GLib.SOURCE_REMOVE;
             });
         };
@@ -517,6 +504,7 @@ export class QuakeManager {
         const win = this._windows.get(entryId);
         win?.disconnectObject(this);
         this._clearFirstFrameWatch(entryId);
+        this._clearStartupMonitorGuard(entryId);
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
@@ -596,6 +584,39 @@ export class QuakeManager {
         return sanitizeMonitorIndex(rawMonitor);
     }
 
+    private _startStartupMonitorGuard(entryId: string): void {
+        this._clearStartupMonitorGuard(entryId);
+
+        const timeoutId = this._timeoutAdd(
+            GLib.PRIORITY_DEFAULT,
+            5000,
+            () => {
+                this._startupMonitorGuardIds.delete(entryId);
+                return GLib.SOURCE_REMOVE;
+            },
+        );
+        this._startupMonitorGuardIds.set(entryId, timeoutId);
+    }
+
+    private _consumeStartupMonitorGuard(entryId: string): boolean {
+        const timeoutId = this._startupMonitorGuardIds.get(entryId);
+        if (timeoutId === undefined)
+            return false;
+
+        this._startupMonitorGuardIds.delete(entryId);
+        this._removeSource(timeoutId);
+        return true;
+    }
+
+    private _clearStartupMonitorGuard(entryId: string): void {
+        const timeoutId = this._startupMonitorGuardIds.get(entryId);
+        if (timeoutId === undefined)
+            return;
+
+        this._startupMonitorGuardIds.delete(entryId);
+        this._removeSource(timeoutId);
+    }
+
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
         const entryId = this._entryIdForWindow(win);
         if (!entryId)
@@ -614,6 +635,27 @@ export class QuakeManager {
         if (configuredMonitor !== null) {
             this._lastMonitor.set(entryId, configuredMonitor);
             PERSISTENT_MONITOR.set(entryId, configuredMonitor);
+
+            // Chromium may restore its previous monitor after our initial map.
+            // During the short startup guard, correct the first escape exactly
+            // once. Consume the guard before moving so our own monitor-enter
+            // event cannot recurse.
+            if (
+                safeIndex !== configuredMonitor &&
+                this._consumeStartupMonitorGuard(entryId)
+            ) {
+                this._timeoutAdd(GLib.PRIORITY_DEFAULT, 100, () => {
+                    if (
+                        this._windows.get(entryId) === win &&
+                        this._isWindowAlive(win)
+                    ) {
+                        const currentEntry = this._entries.get(entryId);
+                        if (currentEntry)
+                            this._applyQuakeGeometry(entryId, win, currentEntry, false);
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
             return;
         }
         if (win.minimized || !this._isVisible(win)) {
