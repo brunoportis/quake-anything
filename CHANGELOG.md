@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-entry **Top crop** setting for visually hiding client-side title bars or
+  PWA/browser chrome while preserving the configured Quake viewport size.
+
 ## [1.0.1] - 2026-08-25
 
 ### Fixed
