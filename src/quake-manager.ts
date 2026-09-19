@@ -272,7 +272,7 @@ export class QuakeManager {
             .some(value => value?.trim().toLowerCase() === expected);
     }
 
-    private _findExistingWindow(entry: QuakeEntry): Meta.Window | null {
+    private _findExistingWindow(entry: QuakeEntry): Meta.Window | undefined {
         const windows = global.get_window_actors()
             .map(actor => actor.meta_window)
             .filter((win): win is Meta.Window => !!win && this._isWindowAlive(win));
@@ -291,7 +291,7 @@ export class QuakeManager {
         // matching window so we do not accidentally claim an unrelated window.
         const trackedMatches = windows.filter(win =>
             this._windowMatchesTrackedApp(win, entry.appId));
-        return trackedMatches.length === 1 ? trackedMatches[0] : null;
+        return trackedMatches.length === 1 ? trackedMatches[0] : undefined;
     }
 
     private _claimWindow(entryId: string, win: Meta.Window, isRestore = false): void {
