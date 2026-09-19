@@ -540,10 +540,15 @@ export class QuakeManager {
     }
 
     private _configuredMonitor(entry: QuakeEntry): number | null {
-        const monitorIndex = entry.monitorIndex;
+        const connector = entry.monitorConnector;
+        if (!connector)
+            return null;
+
+        const monitorIndex = global.backend
+            .get_monitor_manager()
+            .get_monitor_for_connector(connector);
         const monitorCount = global.display.get_n_monitors();
         if (
-            monitorIndex === null ||
             !Number.isInteger(monitorIndex) ||
             monitorIndex < 0 ||
             monitorIndex >= monitorCount
