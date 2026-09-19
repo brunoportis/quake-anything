@@ -305,7 +305,7 @@ export class QuakeManager {
         // path separators for the WM class. For example:
         // https://chatgpt.com -> chatgpt.com_/ -> chatgpt.com__
         const token = `${host}_${path}`
-            .replace(/[\/\\]/g, '_')
+            .replace(/[/\\]/g, '_')
             .toLowerCase();
 
         const profileMatch = commandLine.match(
