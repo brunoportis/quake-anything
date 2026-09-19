@@ -1,4 +1,5 @@
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GioUnix from 'gi://GioUnix';
 import GLib from 'gi://GLib';
@@ -11,6 +12,7 @@ import {
 import {ShortcutDialog} from './prefs/shortcut-dialog.js';
 import {
     createEntryId,
+    entriesToMonitorTuples,
     entriesToTopCropTuples,
     entriesToTuples,
     formatMessage,
@@ -18,6 +20,7 @@ import {
     parseEntries,
     type QuakeEntry,
     type QuakeEntryTuple,
+    type QuakeMonitorTuple,
     type QuakeSide,
     type QuakeTopCropTuple,
 } from './types.js';
@@ -51,6 +54,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
     private _settings: Gio.Settings | null = null;
     private _settingsChangedId = 0;
     private _topCropsChangedId = 0;
+    private _monitorsChangedId = 0;
     private _rows: Gtk.Widget[] = [];
 
     async fillPreferencesWindow(window: PrefsHost): Promise<void> {
@@ -82,6 +86,9 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         this._topCropsChangedId = settings.connect('changed::top-crops', () => {
             this._rebuildList();
         });
+        this._monitorsChangedId = settings.connect('changed::monitors', () => {
+            this._rebuildList();
+        });
         window.connect('close-request', () => {
             this._disconnectSettings();
             return false;
@@ -96,6 +103,10 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         if (this._settings && this._topCropsChangedId) {
             this._settings.disconnect(this._topCropsChangedId);
             this._topCropsChangedId = 0;
+        }
+        if (this._settings && this._monitorsChangedId) {
+            this._settings.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = 0;
         }
     }
 
@@ -148,6 +159,12 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
             `${entry.sizePercent}%`,
             shortcut,
         ];
+        if (entry.monitorIndex !== null) {
+            details.push(formatMessage(
+                _('Monitor %s'),
+                String(entry.monitorIndex + 1),
+            ));
+        }
         if (entry.topCrop > 0) {
             details.push(formatMessage(
                 _('Top crop %s px'),
@@ -224,6 +241,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         let shortcut = existing?.shortcut ?? '';
         let sizePercent = existing?.sizePercent ?? 40;
         let topCrop = existing?.topCrop ?? 0;
+        let monitorIndex = existing?.monitorIndex ?? null;
 
         const appRow = new Adw.ActionRow({
             title: _('Application'),
@@ -248,6 +266,33 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
             });
         });
         group.add(appRow);
+
+        const display = Gdk.Display.get_default();
+        const connectedMonitorCount = display?.get_monitors().get_n_items() ?? 1;
+        const monitorCount = Math.max(
+            connectedMonitorCount,
+            monitorIndex !== null ? monitorIndex + 1 : 0,
+        );
+        const monitorTitles = [
+            _('Automatic'),
+            ...Array.from(
+                {length: monitorCount},
+                (_unused, index) => formatMessage(_('Monitor %s'), String(index + 1)),
+            ),
+        ];
+        const monitorModel = Gtk.StringList.new(monitorTitles);
+        const monitorRow = new Adw.ComboRow({
+            title: _('Monitor'),
+            subtitle: _('Choose where this Quake window is docked'),
+            model: monitorModel,
+            selected: monitorIndex === null ? 0 : monitorIndex + 1,
+        });
+        monitorRow.connect('notify::selected', () => {
+            monitorIndex = monitorRow.selected === 0
+                ? null
+                : monitorRow.selected - 1;
+        });
+        group.add(monitorRow);
 
         const sideModel = Gtk.StringList.new(labels.map(s => s.title));
         const sideRow = new Adw.ComboRow({
@@ -362,6 +407,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
                 shortcut,
                 sizePercent: Math.min(90, Math.max(10, sizePercent)),
                 topCrop: Math.min(160, Math.max(0, topCrop)),
+                monitorIndex,
             };
 
             const idx = entries.findIndex(e => e.id === next.id);
@@ -503,12 +549,17 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         const raw = settings.get_value('entries').deep_unpack() as QuakeEntryTuple[];
         const topCrops = settings.get_value('top-crops')
             .deep_unpack() as QuakeTopCropTuple[];
-        return parseEntries(raw, topCrops);
+        const monitors = settings.get_value('monitors')
+            .deep_unpack() as QuakeMonitorTuple[];
+        return parseEntries(raw, topCrops, monitors);
     }
 
     private _saveEntries(settings: Gio.Settings, entries: QuakeEntry[]): void {
         const topCrops = entriesToTopCropTuples(entries);
         settings.set_value('top-crops', new GLib.Variant('a(si)', topCrops));
+
+        const monitors = entriesToMonitorTuples(entries);
+        settings.set_value('monitors', new GLib.Variant('a(si)', monitors));
 
         const tuples = entriesToTuples(entries);
         settings.set_value('entries', new GLib.Variant('a(ssssi)', tuples));
