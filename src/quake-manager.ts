@@ -63,6 +63,7 @@ export class QuakeManager {
     private _animating = new Set<string>();
     private _applyingGeometry = new Set<string>();
     private _sourceIds = new Set<number>();
+    private _monitorCorrectionIds = new Map<string, number>();
     private _firstFrameWatches = new Map<string, FirstFrameWatch>();
     private _hideSnapshots = new Map<Meta.WindowActor, HideSnapshotState>();
 
@@ -108,6 +109,7 @@ export class QuakeManager {
         this._clearHideSnapshots();
         this._clearPending();
         this._clearSources();
+        this._monitorCorrectionIds.clear();
         for (const id of [...this._windows.keys()])
             this._detachWindow(id, false);
         this._entries.clear();
@@ -426,13 +428,23 @@ export class QuakeManager {
             this._lastMonitor.delete(entryId);
         }
 
-        win.connectObject('unmanaged', () => {
-            PERSISTENT_WINDOWS.delete(win.get_id());
-            PERSISTENT_PERCENT.delete(entryId);
-            PERSISTENT_MONITOR.delete(entryId);
-            if (this._windows.get(entryId) === win)
-                this._detachWindow(entryId, true);
-        }, this);
+        win.connectObject(
+            'unmanaged', () => {
+                PERSISTENT_WINDOWS.delete(win.get_id());
+                PERSISTENT_PERCENT.delete(entryId);
+                PERSISTENT_MONITOR.delete(entryId);
+                this._clearMonitorCorrection(entryId);
+                if (this._windows.get(entryId) === win)
+                    this._detachWindow(entryId, true);
+            },
+            'position-changed', () => {
+                this._scheduleConfiguredMonitorCorrection(entryId, win);
+            },
+            'shown', () => {
+                this._scheduleConfiguredMonitorCorrection(entryId, win);
+            },
+            this,
+        );
 
         if (isRestore) {
             const percent = PERSISTENT_PERCENT.get(entryId);
@@ -498,6 +510,7 @@ export class QuakeManager {
         const win = this._windows.get(entryId);
         win?.disconnectObject(this);
         this._clearFirstFrameWatch(entryId);
+        this._clearMonitorCorrection(entryId);
 
         this._animating.delete(entryId);
         if (win && this._isWindowAlive(win)) {
@@ -547,13 +560,6 @@ export class QuakeManager {
         const monitorIndex = global.backend
             .get_monitor_manager()
             .get_monitor_for_connector(connector);
-
-        console.log('[quake-monitor] resolve', JSON.stringify({
-            entryId: entry.id,
-            connector,
-            monitorIndex,
-            monitorCount: global.display.get_n_monitors(),
-        }));
         const monitorCount = global.display.get_n_monitors();
         if (
             !Number.isInteger(monitorIndex) ||
@@ -584,6 +590,67 @@ export class QuakeManager {
         return sanitizeMonitorIndex(rawMonitor);
     }
 
+    private _scheduleConfiguredMonitorCorrection(
+        entryId: string,
+        win: Meta.Window,
+    ): void {
+        const entry = this._entries.get(entryId);
+        if (!entry || !entry.monitorConnector)
+            return;
+        if (!this._isWindowAlive(win) || win.minimized)
+            return;
+
+        const configuredMonitor = this._configuredMonitor(entry);
+        if (configuredMonitor === null)
+            return;
+        if (sanitizeMonitorIndex(win.get_monitor()) === configuredMonitor) {
+            this._clearMonitorCorrection(entryId);
+            return;
+        }
+
+        this._clearMonitorCorrection(entryId);
+
+        // Chromium can restore its remembered monitor during the initial map,
+        // after Quake has already applied the requested geometry. Debounce the
+        // final placement so we correct the result after that startup burst.
+        const sourceId = this._timeoutAdd(
+            GLib.PRIORITY_DEFAULT,
+            300,
+            () => {
+                this._monitorCorrectionIds.delete(entryId);
+                if (
+                    this._windows.get(entryId) !== win ||
+                    !this._isWindowAlive(win) ||
+                    win.minimized
+                )
+                    return GLib.SOURCE_REMOVE;
+
+                const currentEntry = this._entries.get(entryId);
+                if (!currentEntry)
+                    return GLib.SOURCE_REMOVE;
+
+                const targetMonitor = this._configuredMonitor(currentEntry);
+                if (
+                    targetMonitor !== null &&
+                    sanitizeMonitorIndex(win.get_monitor()) !== targetMonitor
+                ) {
+                    this._applyQuakeGeometry(entryId, win, currentEntry, false);
+                }
+
+                return GLib.SOURCE_REMOVE;
+            },
+        );
+        this._monitorCorrectionIds.set(entryId, sourceId);
+    }
+
+    private _clearMonitorCorrection(entryId: string): void {
+        const sourceId = this._monitorCorrectionIds.get(entryId);
+        if (sourceId === undefined)
+            return;
+        this._monitorCorrectionIds.delete(entryId);
+        this._removeSource(sourceId);
+    }
+
     private _onEnteredMonitor(monitorIndex: number, win: Meta.Window): void {
         const entryId = this._entryIdForWindow(win);
         if (!entryId)
@@ -602,18 +669,7 @@ export class QuakeManager {
         if (configuredMonitor !== null) {
             this._lastMonitor.set(entryId, configuredMonitor);
             PERSISTENT_MONITOR.set(entryId, configuredMonitor);
-
-            if (
-                safeIndex !== configuredMonitor &&
-                !win.minimized &&
-                this._isVisible(win)
-            ) {
-                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
-                    if (this._windows.get(entryId) === win && this._isWindowAlive(win))
-                        this._applyQuakeGeometry(entryId, win, entry, false);
-                    return GLib.SOURCE_REMOVE;
-                });
-            }
+            this._scheduleConfiguredMonitorCorrection(entryId, win);
             return;
         }
         if (win.minimized || !this._isVisible(win)) {
@@ -729,22 +785,6 @@ export class QuakeManager {
             usePointerMonitor,
         );
         const rect = computeQuakeRect(entry.side, percent, monitor);
-        if (entry.monitorConnector) {
-            const beforeRect = win.get_frame_rect();
-            console.log('[quake-monitor] apply', JSON.stringify({
-                entryId,
-                connector: entry.monitorConnector,
-                targetMonitor: monitor,
-                currentMonitor: win.get_monitor(),
-                targetRect: rect,
-                beforeRect: {
-                    x: beforeRect.x,
-                    y: beforeRect.y,
-                    width: beforeRect.width,
-                    height: beforeRect.height,
-                },
-            }));
-        }
         if (!isValidRect(rect)) {
             console.error('[quake-anything] refusing invalid quake rect', rect);
             return;
@@ -769,28 +809,6 @@ export class QuakeManager {
                 rect.width,
                 rect.height + topCrop,
             );
-
-            if (entry.monitorConnector) {
-                this._timeoutAdd(GLib.PRIORITY_DEFAULT, 250, () => {
-                    if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
-                        return GLib.SOURCE_REMOVE;
-
-                    const afterRect = win.get_frame_rect();
-                    console.log('[quake-monitor] settle', JSON.stringify({
-                        entryId,
-                        connector: entry.monitorConnector,
-                        targetMonitor: monitor,
-                        actualMonitor: win.get_monitor(),
-                        afterRect: {
-                            x: afterRect.x,
-                            y: afterRect.y,
-                            width: afterRect.width,
-                            height: afterRect.height,
-                        },
-                    }));
-                    return GLib.SOURCE_REMOVE;
-                });
-            }
 
             this._lastMonitor.set(entryId, monitor);
             PERSISTENT_MONITOR.set(entryId, monitor);
