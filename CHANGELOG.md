@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mutter's current window monitor after reload/re-enable.
 - First-spawn monitor selection now uses Mutter's authoritative current-monitor
   value instead of re-deriving it from pointer coordinates.
+- Explicit monitor placement is rechecked after startup position changes so apps
+  that restore their previous monitor cannot override the configured Quake monitor.
 
 - Top crop is reapplied to already-visible and reclaimed windows when settings
   change or the extension is re-enabled.
