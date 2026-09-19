@@ -132,6 +132,30 @@ export class QuakeManager {
         this._entries.clear();
         for (const entry of entries)
             this._entries.set(entry.id, entry);
+
+        // Settings can change while a managed window is already visible.
+        // Re-apply both geometry and visual crop immediately instead of waiting
+        // for the next hide/show cycle.
+        for (const [entryId, win] of this._windows) {
+            const entry = this._entries.get(entryId);
+            if (!entry || !this._isWindowAlive(win) || !this._isVisible(win))
+                continue;
+            if (this._animating.has(entryId))
+                continue;
+
+            this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
+                    return GLib.SOURCE_REMOVE;
+
+                this._applyQuakeGeometry(entryId, win, entry, false);
+                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win))
+                        this._applyVisibleTopCrop(entryId, win, entry);
+                    return GLib.SOURCE_REMOVE;
+                });
+                return GLib.SOURCE_REMOVE;
+            });
+        }
     }
 
     getEntry(id: string): QuakeEntry | undefined {
@@ -418,8 +442,14 @@ export class QuakeManager {
             if (mon !== undefined)
                 this._lastMonitor.set(entryId, mon);
             
-            if (this._isVisible(win))
+            if (this._isVisible(win)) {
                 this._applyQuakeGeometry(entryId, win, entry, false);
+                this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win))
+                        this._applyVisibleTopCrop(entryId, win, entry);
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
             return;
         }
 
@@ -572,6 +602,45 @@ export class QuakeManager {
             return;
 
         actor.set_clip(0, crop, safeWidth, safeHeight - crop);
+    }
+
+    private _applyVisibleTopCrop(
+        entryId: string,
+        win: Meta.Window,
+        entry: QuakeEntry,
+    ): void {
+        if (!this._isWindowAlive(win))
+            return;
+
+        const actor = win.get_compositor_private() as Meta.WindowActor | null;
+        if (!actor)
+            return;
+
+        const topCrop = this._topCrop(entry);
+        const bufferRect = win.get_buffer_rect();
+
+        actor.remove_all_transitions();
+        actor.set_position(bufferRect.x, bufferRect.y);
+        actor.set_size(bufferRect.width, bufferRect.height);
+        this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
+        actor.set_translation(0, -topCrop, 0);
+
+        console.log('[quake-crop] applied', JSON.stringify({
+            entryId,
+            windowId: win.get_id(),
+            topCrop,
+            bufferRect: {
+                x: bufferRect.x,
+                y: bufferRect.y,
+                width: bufferRect.width,
+                height: bufferRect.height,
+            },
+            actorX: actor.get_x(),
+            actorY: actor.get_y(),
+            actorWidth: actor.get_width(),
+            actorHeight: actor.get_height(),
+            translationY: actor.get_translation_y(),
+        }));
     }
 
     private _rememberQuakePercent(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
