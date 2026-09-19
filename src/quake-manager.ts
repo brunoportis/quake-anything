@@ -244,7 +244,11 @@ export class QuakeManager {
             return true;
 
         const startupWmClass = this._getStartupWmClass(entry.appId);
-        return !!startupWmClass && this._windowMatchesWmClass(win, startupWmClass);
+        if (startupWmClass && this._windowMatchesWmClass(win, startupWmClass))
+            return true;
+
+        const webAppIdentity = this._getWebAppClassIdentity(entry.appId);
+        return !!webAppIdentity && this._windowMatchesWebAppIdentity(win, webAppIdentity);
     }
 
     private _windowMatchesTrackedApp(win: Meta.Window, appId: string): boolean {
@@ -272,36 +276,88 @@ export class QuakeManager {
             .some(value => value?.trim().toLowerCase() === expected);
     }
 
+    private _getWebAppClassIdentity(
+        appId: string,
+    ): {token: string; profile: string | null} | null {
+        const raw = appId.trim();
+        const desktopId = raw.endsWith('.desktop') ? raw : `${raw}.desktop`;
+        const commandLine = GioUnix.DesktopAppInfo.new(desktopId)?.get_commandline();
+        if (!commandLine)
+            return null;
+
+        const appMatch = commandLine.match(
+            /(?:^|\\s)--app=(?:"([^"]+)"|'([^']+)'|(\\S+))/,
+        );
+        const appUrl = appMatch?.[1] ?? appMatch?.[2] ?? appMatch?.[3];
+        if (!appUrl)
+            return null;
+
+        const urlMatch = appUrl.match(
+            /^[a-z][a-z0-9+.-]*:\\/\\/([^/?#]+)([^?#]*)/i,
+        );
+        if (!urlMatch)
+            return null;
+
+        const host = urlMatch[1].replace(/:\\d+$/, '').toLowerCase();
+        const path = urlMatch[2] || '/';
+
+        // Chromium derives URL-app names from "{host}_{path}" and sanitizes
+        // path separators for the WM class. For example:
+        // https://chatgpt.com -> chatgpt.com_/ -> chatgpt.com__
+        const token = `${host}_${path}`
+            .replace(/[\\/\\\\]/g, '_')
+            .toLowerCase();
+
+        const profileMatch = commandLine.match(
+            /(?:^|\\s)--profile-directory=(?:"([^"]+)"|'([^']+)'|(\\S+))/,
+        );
+        const profile = profileMatch?.[1] ?? profileMatch?.[2] ?? profileMatch?.[3] ?? null;
+
+        return {token, profile};
+    }
+
+    private _windowMatchesWebAppIdentity(
+        win: Meta.Window,
+        identity: {token: string; profile: string | null},
+    ): boolean {
+        const suffix = identity.profile
+            ? `${identity.token}-${identity.profile.toLowerCase()}`
+            : identity.token;
+
+        return [win.get_wm_class(), win.get_wm_class_instance()]
+            .some(value => {
+                const normalized = value?.trim().toLowerCase();
+                return !!normalized && (
+                    normalized === suffix ||
+                    normalized.endsWith(`-${suffix}`) ||
+                    (!identity.profile && normalized.includes(`-${identity.token}`))
+                );
+            });
+    }
+
     private _findExistingWindow(entry: QuakeEntry): Meta.Window | undefined {
         const windows = global.get_window_actors()
             .map(actor => actor.meta_window)
             .filter((win): win is Meta.Window => !!win && this._isWindowAlive(win));
 
-        const tracker = Shell.WindowTracker.get_default();
+        // Prefer explicit StartupWMClass when the desktop file and the actual
+        // window agree on it.
         const startupWmClass = this._getStartupWmClass(entry.appId);
-
-        console.log('[quake-anything] recovery probe', JSON.stringify({
-            expectedAppId: entry.appId,
-            startupWmClass,
-            windows: windows.map(win => ({
-                id: win.get_id(),
-                title: win.get_title(),
-                trackedAppId: tracker.get_window_app(win)?.get_id() ?? null,
-                wmClass: win.get_wm_class(),
-                wmClassInstance: win.get_wm_class_instance(),
-                gtkApplicationId: win.get_gtk_application_id(),
-                sandboxedAppId: win.get_sandboxed_app_id(),
-                pid: win.get_pid(),
-            })),
-        }));
-
-        // StartupWMClass is a stronger identity than Shell's generic app tracker,
-        // especially for Chromium/Chrome PWAs.
         if (startupWmClass) {
             const wmClassMatch = windows.find(win =>
                 this._windowMatchesWmClass(win, startupWmClass));
             if (wmClassMatch)
                 return wmClassMatch;
+        }
+
+        // Chrome/Chromium URL apps launched with --app=<URL> can expose a
+        // site-derived WM class instead of the desktop file's StartupWMClass.
+        const webAppIdentity = this._getWebAppClassIdentity(entry.appId);
+        if (webAppIdentity) {
+            const webAppMatch = windows.find(win =>
+                this._windowMatchesWebAppIdentity(win, webAppIdentity));
+            if (webAppMatch)
+                return webAppMatch;
         }
 
         // For regular apps, only recover automatically when there is a single
