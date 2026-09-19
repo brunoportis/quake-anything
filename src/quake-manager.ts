@@ -671,6 +671,17 @@ export class QuakeManager {
             return;
 
         const offset = slideOffsetForSide(entry.side, rect);
+        console.log('[quake-hide] request', JSON.stringify({
+            entryId,
+            windowId: win.get_id(),
+            side: entry.side,
+            offset,
+            actorX: actor.x,
+            actorY: actor.y,
+            actorWidth: actor.width,
+            actorHeight: actor.height,
+        }));
+
         actor.remove_all_transitions();
         actor.set_translation(offset.x, offset.y, 0);
         this._animating.add(entryId);
@@ -739,11 +750,24 @@ export class QuakeManager {
             return;
 
         const wm = Main.wm as unknown as WindowManagerInternals;
+        console.log('[quake-hide] native-minimize', JSON.stringify({
+            windowId: actor.meta_window.get_id(),
+            minimizing: wm._minimizing.has(actor),
+            actorVisible: actor.visible,
+            actorOpacity: actor.opacity,
+            actorX: actor.x,
+            actorY: actor.y,
+            actorWidth: actor.width,
+            actorHeight: actor.height,
+        }));
 
         // The Shell's handler is connected before this extension. If it chose
         // not to animate, the minimize has already been completed; respect
         // that and just clear our bookkeeping.
         if (!wm._minimizing.has(actor)) {
+            console.log('[quake-hide] shell-did-not-animate', JSON.stringify({
+                windowId: actor.meta_window.get_id(),
+            }));
             this._nativeHideActors.delete(actor);
             this._animating.delete(state.entryId);
             return;
@@ -765,6 +789,13 @@ export class QuakeManager {
             const content = actor.paint_to_content(null);
             const parent = actor.get_parent();
 
+            console.log('[quake-hide] snapshot-probe', JSON.stringify({
+                windowId: actor.meta_window.get_id(),
+                hasContent: !!content,
+                hasParent: !!parent,
+                parentName: parent?.name ?? null,
+            }));
+
             if (content && parent) {
                 const visual = new Clutter.Actor({
                     x: actor.x,
@@ -777,8 +808,25 @@ export class QuakeManager {
                 parent.add_child(visual);
 
                 state.visual = visual;
+                console.log('[quake-hide] snapshot-created', JSON.stringify({
+                    windowId: actor.meta_window.get_id(),
+                    x: visual.x,
+                    y: visual.y,
+                    width: visual.width,
+                    height: visual.height,
+                    visible: visual.visible,
+                    opacity: visual.opacity,
+                }));
+
                 state.completed = true;
                 shellwm.completed_minimize(actor);
+
+                console.log('[quake-hide] native-completed-snapshot-still-present', JSON.stringify({
+                    windowId: actor.meta_window.get_id(),
+                    visible: visual.visible,
+                    opacity: visual.opacity,
+                    parentName: visual.get_parent()?.name ?? null,
+                }));
 
                 this._animateNativeHide(actor, state, visual);
                 return;
@@ -799,6 +847,14 @@ export class QuakeManager {
         state: NativeHideState,
         visual: Clutter.Actor,
     ): void {
+        console.log('[quake-hide] animation-start', JSON.stringify({
+            windowId: actor.meta_window.get_id(),
+            visualIsWindowActor: visual === actor,
+            offset: state.offset,
+            visible: visual.visible,
+            opacity: visual.opacity,
+        }));
+
         visual.remove_all_transitions();
         visual.set_translation(0, 0, 0);
         visual.ease({
@@ -813,6 +869,12 @@ export class QuakeManager {
     private _finishNativeHide(actor: Meta.WindowActor, state: NativeHideState): void {
         if (this._nativeHideActors.get(actor) !== state)
             return;
+
+        console.log('[quake-hide] animation-finished', JSON.stringify({
+            windowId: actor.meta_window.get_id(),
+            completedEarly: state.completed,
+            visualExists: !!state.visual,
+        }));
 
         this._nativeHideActors.delete(actor);
         this._animating.delete(state.entryId);
