@@ -459,6 +459,7 @@ export class QuakeManager {
             if (actor) {
                 actor.remove_all_transitions();
                 actor.set_translation(0, 0, 0);
+                actor.set_opacity(255);
             }
         }
 
@@ -606,6 +607,10 @@ export class QuakeManager {
             return;
         }
 
+        const actor = win.get_compositor_private() as Clutter.Actor | null;
+        if (actor)
+            actor.set_opacity(255);
+
         if (win.minimized)
             win.unminimize();
 
@@ -618,7 +623,6 @@ export class QuakeManager {
 
         win.activate(global.get_current_time());
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
         if (!actor)
             return;
 
@@ -656,13 +660,43 @@ export class QuakeManager {
         this._rememberQuakePercent(entryId, win, entry);
 
         const actor = win.get_compositor_private() as Clutter.Actor | null;
-        if (actor) {
-            actor.remove_all_transitions();
-            actor.set_translation(0, 0, 0);
+        if (!actor) {
+            win.minimize();
+            return;
         }
-        this._animating.delete(entryId);
 
-        win.minimize();
+        const rect = computeQuakeRect(
+            entry.side,
+            this._effectivePercent(entryId, entry),
+            sanitizeMonitorIndex(win.get_monitor()),
+        );
+        if (!isValidRect(rect)) {
+            win.minimize();
+            return;
+        }
+
+        const offset = slideOffsetForSide(entry.side, rect);
+        actor.remove_all_transitions();
+        actor.set_translation(0, 0, 0);
+        this._animating.add(entryId);
+        actor.ease({
+            translationX: offset.x,
+            translationY: offset.y,
+            duration: ANIM_MS,
+            mode: Clutter.AnimationMode.EASE_IN_CUBIC,
+            onStopped: () => {
+                this._animating.delete(entryId);
+
+                if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
+                    return;
+
+                // Keep Mutter's regular minimize animation invisible. The
+                // opacity is restored before unminimizing in _show().
+                actor.set_opacity(0);
+                actor.set_translation(0, 0, 0);
+                win.minimize();
+            },
+        });
     }
 
     private _resolveApp(appId: string): Shell.App | null {
