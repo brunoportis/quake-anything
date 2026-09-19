@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quake windows now restore to their last known monitor instead of trusting
+  Mutter's current window monitor after reload/re-enable.
+
 - Top crop is reapplied to already-visible and reclaimed windows when settings
   change or the extension is re-enabled.
 - Preferences refresh when top-crop values change.
