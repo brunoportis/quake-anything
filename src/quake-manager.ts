@@ -660,7 +660,9 @@ export class QuakeManager {
         const percent = this._effectivePercent(entryId, entry);
         const rawMonitor = usePointerMonitor
             ? getPointerMonitorIndex()
-            : win.get_monitor();
+            : this._lastMonitor.get(entryId)
+                ?? PERSISTENT_MONITOR.get(entryId)
+                ?? win.get_monitor();
         const monitor = sanitizeMonitorIndex(rawMonitor);
         const rect = computeQuakeRect(entry.side, percent, monitor);
         if (!isValidRect(rect)) {
