@@ -279,7 +279,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
                 ?? connector;
             monitorChoices.push({
                 connector,
-                title: `${description} · ${connector}`,
+                title: `${connector} · ${description}`,
             });
         }
 
