@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Quake windows now restore to their last known monitor instead of trusting
   Mutter's current window monitor after reload/re-enable.
+- Newly spawned windows are kept hidden until their initial Quake move/resize reaches
+  Mutter's pre-redraw phase, avoiding stale first-frame placement across monitors.
 
 - Top crop is reapplied to already-visible and reclaimed windows when settings
   change or the extension is re-enabled.
