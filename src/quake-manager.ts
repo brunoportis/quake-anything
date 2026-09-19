@@ -696,8 +696,8 @@ export class QuakeManager {
 
         this._animating.add(entryId);
         actor.ease({
-            translationX: 0,
-            translationY: 0,
+            translation_x: 0,
+            translation_y: 0,
             duration: SHOW_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onStopped: () => {
@@ -787,58 +787,24 @@ export class QuakeManager {
             // native effect explicitly skipped.
             actor.set_opacity(0);
 
-            const [startX, startY] = visual.get_transformed_position();
-            const [startWidth, startHeight] = visual.get_transformed_size();
-            console.log('[quake-hide] visual-probe', JSON.stringify({
-                windowId: win.get_id(),
-                visible: visual.visible,
-                mapped: visual.mapped,
-                opacity: visual.opacity,
-                startX,
-                startY,
-                startWidth,
-                startHeight,
-            }));
+            visual.ease({
+                translation_x: offset.x,
+                translation_y: offset.y,
+                duration: HIDE_ANIM_MS,
+                mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
+                onStopped: () => {
+                    console.log('[quake-hide] animation-finished', JSON.stringify({
+                        windowId: win.get_id(),
+                    }));
 
-            // Temporary diagnostic hold: if the snapshot is actually being
-            // composed, it should remain visibly frozen for half a second
-            // before sliding out.
-            this._timeoutAdd(GLib.PRIORITY_DEFAULT, 500, () => {
-                if (this._hideSnapshots.get(actor)?.visual !== visual)
-                    return GLib.SOURCE_REMOVE;
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win)) {
+                        (Main.wm as unknown as WindowManagerEffects)
+                            .skipNextEffect(actor);
+                        win.minimize();
+                    }
 
-                const [beforeX, beforeY] = visual.get_transformed_position();
-                console.log('[quake-hide] slide-start', JSON.stringify({
-                    windowId: win.get_id(),
-                    beforeX,
-                    beforeY,
-                    targetOffset: offset,
-                }));
-
-                visual.ease({
-                    translationX: offset.x,
-                    translationY: offset.y,
-                    duration: HIDE_ANIM_MS,
-                    mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
-                    onStopped: () => {
-                        const [endX, endY] = visual.get_transformed_position();
-                        console.log('[quake-hide] animation-finished', JSON.stringify({
-                            windowId: win.get_id(),
-                            endX,
-                            endY,
-                        }));
-
-                        if (this._windows.get(entryId) === win && this._isWindowAlive(win)) {
-                            (Main.wm as unknown as WindowManagerEffects)
-                                .skipNextEffect(actor);
-                            win.minimize();
-                        }
-
-                        this._clearHideSnapshot(actor);
-                    },
-                });
-
-                return GLib.SOURCE_REMOVE;
+                    this._clearHideSnapshot(actor);
+                },
             });
         } catch (e) {
             console.warn('[quake-anything] hide snapshot failed; minimizing without animation', e);
