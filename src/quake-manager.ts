@@ -639,7 +639,7 @@ export class QuakeManager {
             actorY: actor.get_y(),
             actorWidth: actor.get_width(),
             actorHeight: actor.get_height(),
-            translationY: actor.get_translation_y(),
+            translationY: -topCrop,
         }));
     }
 
