@@ -11,6 +11,7 @@ import {
 import {ShortcutDialog} from './prefs/shortcut-dialog.js';
 import {
     createEntryId,
+    entriesToTopCropTuples,
     entriesToTuples,
     formatMessage,
     isQuakeSide,
@@ -18,6 +19,7 @@ import {
     type QuakeEntry,
     type QuakeEntryTuple,
     type QuakeSide,
+    type QuakeTopCropTuple,
 } from './types.js';
 
 function sideLabels(): {id: QuakeSide; title: string; subtitle: string}[] {
@@ -201,6 +203,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         let side: QuakeSide = existing?.side ?? 'top';
         let shortcut = existing?.shortcut ?? '';
         let sizePercent = existing?.sizePercent ?? 40;
+        let topCrop = existing?.topCrop ?? 0;
 
         const appRow = new Adw.ActionRow({
             title: _('Application'),
@@ -296,6 +299,22 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
         });
         group.add(sizeRow);
 
+        const topCropRow = new Adw.SpinRow({
+            title: _('Top crop'),
+            subtitle: _('Hide pixels from the top of the window (0 disables)'),
+            adjustment: new Gtk.Adjustment({
+                lower: 0,
+                upper: 160,
+                step_increment: 1,
+                page_increment: 4,
+                value: topCrop,
+            }),
+        });
+        topCropRow.connect('notify::value', () => {
+            topCrop = Math.round(topCropRow.value);
+        });
+        group.add(topCropRow);
+
         toolbar.set_content(page);
         dialog.set_child(toolbar);
 
@@ -322,6 +341,7 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
                 side,
                 shortcut,
                 sizePercent: Math.min(90, Math.max(10, sizePercent)),
+                topCrop: Math.min(160, Math.max(0, topCrop)),
             };
 
             const idx = entries.findIndex(e => e.id === next.id);
@@ -461,10 +481,15 @@ export default class QuakeAnythingPreferences extends ExtensionPreferences {
 
     private _loadEntries(settings: Gio.Settings): QuakeEntry[] {
         const raw = settings.get_value('entries').deep_unpack() as QuakeEntryTuple[];
-        return parseEntries(raw);
+        const topCrops = settings.get_value('top-crops')
+            .deep_unpack() as QuakeTopCropTuple[];
+        return parseEntries(raw, topCrops);
     }
 
     private _saveEntries(settings: Gio.Settings, entries: QuakeEntry[]): void {
+        const topCrops = entriesToTopCropTuples(entries);
+        settings.set_value('top-crops', new GLib.Variant('a(si)', topCrops));
+
         const tuples = entriesToTuples(entries);
         settings.set_value('entries', new GLib.Variant('a(ssssi)', tuples));
     }
