@@ -547,6 +547,13 @@ export class QuakeManager {
         const monitorIndex = global.backend
             .get_monitor_manager()
             .get_monitor_for_connector(connector);
+
+        console.log('[quake-monitor] resolve', JSON.stringify({
+            entryId: entry.id,
+            connector,
+            monitorIndex,
+            monitorCount: global.display.get_n_monitors(),
+        }));
         const monitorCount = global.display.get_n_monitors();
         if (
             !Number.isInteger(monitorIndex) ||
@@ -722,6 +729,22 @@ export class QuakeManager {
             usePointerMonitor,
         );
         const rect = computeQuakeRect(entry.side, percent, monitor);
+        if (entry.monitorConnector) {
+            const beforeRect = win.get_frame_rect();
+            console.log('[quake-monitor] apply', JSON.stringify({
+                entryId,
+                connector: entry.monitorConnector,
+                targetMonitor: monitor,
+                currentMonitor: win.get_monitor(),
+                targetRect: rect,
+                beforeRect: {
+                    x: beforeRect.x,
+                    y: beforeRect.y,
+                    width: beforeRect.width,
+                    height: beforeRect.height,
+                },
+            }));
+        }
         if (!isValidRect(rect)) {
             console.error('[quake-anything] refusing invalid quake rect', rect);
             return;
@@ -746,6 +769,29 @@ export class QuakeManager {
                 rect.width,
                 rect.height + topCrop,
             );
+
+            if (entry.monitorConnector) {
+                this._timeoutAdd(GLib.PRIORITY_DEFAULT, 250, () => {
+                    if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
+                        return GLib.SOURCE_REMOVE;
+
+                    const afterRect = win.get_frame_rect();
+                    console.log('[quake-monitor] settle', JSON.stringify({
+                        entryId,
+                        connector: entry.monitorConnector,
+                        targetMonitor: monitor,
+                        actualMonitor: win.get_monitor(),
+                        afterRect: {
+                            x: afterRect.x,
+                            y: afterRect.y,
+                            width: afterRect.width,
+                            height: afterRect.height,
+                        },
+                    }));
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
+
             this._lastMonitor.set(entryId, monitor);
             PERSISTENT_MONITOR.set(entryId, monitor);
             if (!this._livePercent.has(entryId)) {
