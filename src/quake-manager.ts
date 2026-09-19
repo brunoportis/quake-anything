@@ -150,7 +150,7 @@ export class QuakeManager {
                 this._applyQuakeGeometry(entryId, win, entry, false);
                 this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     if (this._windows.get(entryId) === win && this._isWindowAlive(win))
-                        this._applyVisibleTopCrop(entryId, win, entry);
+                        this._applyVisibleTopCrop(win, entry);
                     return GLib.SOURCE_REMOVE;
                 });
                 return GLib.SOURCE_REMOVE;
@@ -446,7 +446,7 @@ export class QuakeManager {
                 this._applyQuakeGeometry(entryId, win, entry, false);
                 this._idleAdd(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     if (this._windows.get(entryId) === win && this._isWindowAlive(win))
-                        this._applyVisibleTopCrop(entryId, win, entry);
+                        this._applyVisibleTopCrop(win, entry);
                     return GLib.SOURCE_REMOVE;
                 });
             }
@@ -605,7 +605,6 @@ export class QuakeManager {
     }
 
     private _applyVisibleTopCrop(
-        entryId: string,
         win: Meta.Window,
         entry: QuakeEntry,
     ): void {
