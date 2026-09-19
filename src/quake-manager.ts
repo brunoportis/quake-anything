@@ -625,8 +625,14 @@ export class QuakeManager {
         }
 
         const actor = win.get_compositor_private() as Meta.WindowActor | null;
-        if (actor)
-            actor.set_opacity(255);
+
+        if (actor) {
+            actor.remove_all_transitions();
+            actor.set_translation(0, 0, 0);
+            actor.set_scale(1, 1);
+            actor.set_opacity(0);
+            actor.set_pivot_point(0, 0);
+        }
 
         if (win.minimized) {
             if (actor) {
@@ -643,20 +649,28 @@ export class QuakeManager {
             return;
         }
 
-        win.activate(global.get_current_time());
-
-        if (!actor)
+        if (!actor) {
+            win.activate(global.get_current_time());
             return;
+        }
 
         const rect = computeQuakeRect(
             entry.side,
             this._effectivePercent(entryId, entry),
             sanitizeMonitorIndex(win.get_monitor()),
         );
-        if (!isValidRect(rect))
+        if (!isValidRect(rect)) {
+            actor.set_opacity(255);
+            win.activate(global.get_current_time());
             return;
+        }
 
         const offset = slideOffsetForSide(entry.side, rect);
+
+        actor.set_translation(offset.x, offset.y, 0);
+        actor.set_opacity(255);
+        win.activate(global.get_current_time());
+
         console.log('[quake-show] animation-start', JSON.stringify({
             entryId,
             windowId: win.get_id(),
@@ -668,8 +682,6 @@ export class QuakeManager {
             actorHeight: actor.height,
         }));
 
-        actor.remove_all_transitions();
-        actor.set_translation(offset.x, offset.y, 0);
         this._animating.add(entryId);
         actor.ease({
             translationX: 0,
@@ -756,13 +768,11 @@ export class QuakeManager {
                 offset,
             }));
 
-            // Complete the normal minimize lifecycle without GNOME Shell's
-            // scale-to-corner animation. Our snapshot is the only visual
-            // effect for this toggle.
+            // Keep the real window mapped but invisible while the independent
+            // snapshot performs the whole visual transition. Only after the
+            // snapshot reaches the edge do we ask Mutter to minimize, with its
+            // native effect explicitly skipped.
             actor.set_opacity(0);
-            (Main.wm as unknown as WindowManagerEffects)
-                .skipNextEffect(actor);
-            win.minimize();
 
             visual.ease({
                 translationX: offset.x,
@@ -773,6 +783,13 @@ export class QuakeManager {
                     console.log('[quake-hide] animation-finished', JSON.stringify({
                         windowId: win.get_id(),
                     }));
+
+                    if (this._windows.get(entryId) === win && this._isWindowAlive(win)) {
+                        (Main.wm as unknown as WindowManagerEffects)
+                            .skipNextEffect(actor);
+                        win.minimize();
+                    }
+
                     this._clearHideSnapshot(actor);
                 },
             });
