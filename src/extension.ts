@@ -33,7 +33,7 @@ export default class QuakeAnythingExtension extends Extension {
         this._settings.connectObject(
             'changed::entries', () => this._reload(),
             'changed::top-crops', () => this._reload(),
-            'changed::monitors', () => this._reload(),
+            'changed::monitor-connectors', () => this._reload(),
             this,
         );
     }
@@ -58,7 +58,7 @@ export default class QuakeAnythingExtension extends Extension {
         const raw = this._settings.get_value('entries').deep_unpack() as QuakeEntryTuple[];
         const topCrops = this._settings.get_value('top-crops')
             .deep_unpack() as QuakeTopCropTuple[];
-        const monitors = this._settings.get_value('monitors')
+        const monitors = this._settings.get_value('monitor-connectors')
             .deep_unpack() as QuakeMonitorTuple[];
         const entries = parseEntries(raw, topCrops, monitors);
         this._quake.setEntries(entries);
