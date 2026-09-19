@@ -22,13 +22,12 @@ const PERSISTENT_WINDOWS = new Map<number, string>();
 const PERSISTENT_PERCENT = new Map<string, number>();
 const PERSISTENT_MONITOR = new Map<string, number>();
 
-const ANIM_MS = 180;
+const ANIM_MS = 240;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
 
 interface PendingClaim {
     entryId: string;
-    appId: string;
     timeoutId: number;
 }
 
@@ -128,9 +127,21 @@ export class QuakeManager {
         if (!entry)
             return;
 
-        const win = this._windows.get(entryId);
+        let win = this._windows.get(entryId);
         if (!win || !this._isWindowAlive(win)) {
             this._detachWindow(entryId, true);
+
+            win = this._findExistingWindow(entry);
+            if (win) {
+                this._claimWindow(entryId, win, true);
+
+                if (this._isVisible(win))
+                    this._hide(entryId, win, entry);
+                else
+                    this._show(entryId, win, entry);
+                return;
+            }
+
             this._spawn(entry);
             return;
         }
@@ -174,7 +185,6 @@ export class QuakeManager {
         });
         this._pending = {
             entryId: entry.id,
-            appId: this._normalizeAppId(entry.appId),
             timeoutId,
         };
 
@@ -206,13 +216,13 @@ export class QuakeManager {
             if (!this._isWindowAlive(win))
                 return GLib.SOURCE_REMOVE;
 
-            if (!this._windowMatchesPending(win, pending.appId)) {
+            if (!this._windowMatchesPending(win, pending.entryId)) {
                 this._timeoutAdd(GLib.PRIORITY_DEFAULT, 100, () => {
                     if (!this._pending || this._pending.entryId !== pending.entryId)
                         return GLib.SOURCE_REMOVE;
                     if (!this._isWindowAlive(win))
                         return GLib.SOURCE_REMOVE;
-                    if (this._windowMatchesPending(win, pending.appId))
+                    if (this._windowMatchesPending(win, pending.entryId))
                         this._claimWindow(pending.entryId, win);
                     return GLib.SOURCE_REMOVE;
                 });
@@ -224,12 +234,137 @@ export class QuakeManager {
         });
     }
 
-    private _windowMatchesPending(win: Meta.Window, appId: string): boolean {
+    private _windowMatchesPending(win: Meta.Window, entryId: string): boolean {
+        const entry = this._entries.get(entryId);
+        return !!entry && this._windowMatchesEntry(win, entry);
+    }
+
+    private _windowMatchesEntry(win: Meta.Window, entry: QuakeEntry): boolean {
+        if (this._windowMatchesTrackedApp(win, entry.appId))
+            return true;
+
+        const startupWmClass = this._getStartupWmClass(entry.appId);
+        if (startupWmClass && this._windowMatchesWmClass(win, startupWmClass))
+            return true;
+
+        const webAppIdentity = this._getWebAppClassIdentity(entry.appId);
+        return !!webAppIdentity && this._windowMatchesWebAppIdentity(win, webAppIdentity);
+    }
+
+    private _windowMatchesTrackedApp(win: Meta.Window, appId: string): boolean {
         const tracker = Shell.WindowTracker.get_default();
         const app = tracker.get_window_app(win);
         if (!app)
             return false;
+
         return this._normalizeAppId(app.get_id()) === this._normalizeAppId(appId);
+    }
+
+    private _getStartupWmClass(appId: string): string | null {
+        const raw = appId.trim();
+        const desktopId = raw.endsWith('.desktop') ? raw : `${raw}.desktop`;
+        const info = GioUnix.DesktopAppInfo.new(desktopId);
+        return info?.get_startup_wm_class() ?? null;
+    }
+
+    private _windowMatchesWmClass(win: Meta.Window, startupWmClass: string): boolean {
+        const expected = startupWmClass.trim().toLowerCase();
+        if (!expected)
+            return false;
+
+        return [win.get_wm_class(), win.get_wm_class_instance()]
+            .some(value => value?.trim().toLowerCase() === expected);
+    }
+
+    private _getWebAppClassIdentity(
+        appId: string,
+    ): {token: string; profile: string | null} | null {
+        const raw = appId.trim();
+        const desktopId = raw.endsWith('.desktop') ? raw : `${raw}.desktop`;
+        const commandLine = GioUnix.DesktopAppInfo.new(desktopId)?.get_commandline();
+        if (!commandLine)
+            return null;
+
+        const appMatch = commandLine.match(
+            /(?:^|\s)--app=(?:"([^"]+)"|'([^']+)'|(\S+))/,
+        );
+        const appUrl = appMatch?.[1] ?? appMatch?.[2] ?? appMatch?.[3];
+        if (!appUrl)
+            return null;
+
+        const urlMatch = appUrl.match(
+            /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)([^?#]*)/i,
+        );
+        if (!urlMatch)
+            return null;
+
+        const host = urlMatch[1].replace(/:\d+$/, '').toLowerCase();
+        const path = urlMatch[2] || '/';
+
+        // Chromium derives URL-app names from "{host}_{path}" and sanitizes
+        // path separators for the WM class. For example:
+        // https://chatgpt.com -> chatgpt.com_/ -> chatgpt.com__
+        const token = `${host}_${path}`
+            .replace(/[/\\]/g, '_')
+            .toLowerCase();
+
+        const profileMatch = commandLine.match(
+            /(?:^|\s)--profile-directory=(?:"([^"]+)"|'([^']+)'|(\S+))/,
+        );
+        const profile = profileMatch?.[1] ?? profileMatch?.[2] ?? profileMatch?.[3] ?? null;
+
+        return {token, profile};
+    }
+
+    private _windowMatchesWebAppIdentity(
+        win: Meta.Window,
+        identity: {token: string; profile: string | null},
+    ): boolean {
+        const suffix = identity.profile
+            ? `${identity.token}-${identity.profile.toLowerCase()}`
+            : identity.token;
+
+        return [win.get_wm_class(), win.get_wm_class_instance()]
+            .some(value => {
+                const normalized = value?.trim().toLowerCase();
+                return !!normalized && (
+                    normalized === suffix ||
+                    normalized.endsWith(`-${suffix}`) ||
+                    (!identity.profile && normalized.includes(`-${identity.token}`))
+                );
+            });
+    }
+
+    private _findExistingWindow(entry: QuakeEntry): Meta.Window | undefined {
+        const windows = global.get_window_actors()
+            .map(actor => actor.meta_window)
+            .filter((win): win is Meta.Window => !!win && this._isWindowAlive(win));
+
+        // Prefer explicit StartupWMClass when the desktop file and the actual
+        // window agree on it.
+        const startupWmClass = this._getStartupWmClass(entry.appId);
+        if (startupWmClass) {
+            const wmClassMatch = windows.find(win =>
+                this._windowMatchesWmClass(win, startupWmClass));
+            if (wmClassMatch)
+                return wmClassMatch;
+        }
+
+        // Chrome/Chromium URL apps launched with --app=<URL> can expose a
+        // site-derived WM class instead of the desktop file's StartupWMClass.
+        const webAppIdentity = this._getWebAppClassIdentity(entry.appId);
+        if (webAppIdentity) {
+            const webAppMatch = windows.find(win =>
+                this._windowMatchesWebAppIdentity(win, webAppIdentity));
+            if (webAppMatch)
+                return webAppMatch;
+        }
+
+        // For regular apps, only recover automatically when there is a single
+        // matching window so we do not accidentally claim an unrelated window.
+        const trackedMatches = windows.filter(win =>
+            this._windowMatchesTrackedApp(win, entry.appId));
+        return trackedMatches.length === 1 ? trackedMatches[0] : undefined;
     }
 
     private _claimWindow(entryId: string, win: Meta.Window, isRestore = false): void {
@@ -324,6 +459,7 @@ export class QuakeManager {
             if (actor) {
                 actor.remove_all_transitions();
                 actor.set_translation(0, 0, 0);
+                actor.set_opacity(255);
             }
         }
 
@@ -471,6 +607,10 @@ export class QuakeManager {
             return;
         }
 
+        const actor = win.get_compositor_private() as Clutter.Actor | null;
+        if (actor)
+            actor.set_opacity(255);
+
         if (win.minimized)
             win.unminimize();
 
@@ -483,7 +623,6 @@ export class QuakeManager {
 
         win.activate(global.get_current_time());
 
-        const actor = win.get_compositor_private() as Clutter.Actor | null;
         if (!actor)
             return;
 
@@ -521,13 +660,43 @@ export class QuakeManager {
         this._rememberQuakePercent(entryId, win, entry);
 
         const actor = win.get_compositor_private() as Clutter.Actor | null;
-        if (actor) {
-            actor.remove_all_transitions();
-            actor.set_translation(0, 0, 0);
+        if (!actor) {
+            win.minimize();
+            return;
         }
-        this._animating.delete(entryId);
 
-        win.minimize();
+        const rect = computeQuakeRect(
+            entry.side,
+            this._effectivePercent(entryId, entry),
+            sanitizeMonitorIndex(win.get_monitor()),
+        );
+        if (!isValidRect(rect)) {
+            win.minimize();
+            return;
+        }
+
+        const offset = slideOffsetForSide(entry.side, rect);
+        actor.remove_all_transitions();
+        actor.set_translation(0, 0, 0);
+        this._animating.add(entryId);
+        actor.ease({
+            translationX: offset.x,
+            translationY: offset.y,
+            duration: ANIM_MS,
+            mode: Clutter.AnimationMode.EASE_IN_CUBIC,
+            onStopped: () => {
+                this._animating.delete(entryId);
+
+                if (this._windows.get(entryId) !== win || !this._isWindowAlive(win))
+                    return;
+
+                // Keep Mutter's regular minimize animation invisible. The
+                // opacity is restored before unminimizing in _show().
+                actor.set_opacity(0);
+                actor.set_translation(0, 0, 0);
+                win.minimize();
+            },
+        });
     }
 
     private _resolveApp(appId: string): Shell.App | null {
