@@ -33,15 +33,10 @@ export function isValidRect(rect: Rect): boolean {
 }
 
 export function getPointerMonitorIndex(): number {
-    const [x, y] = global.get_pointer();
-    const display = global.display;
-    const n = display.get_n_monitors();
-    for (let i = 0; i < n; i++) {
-        const geo = display.get_monitor_geometry(i);
-        if (x >= geo.x && x < geo.x + geo.width && y >= geo.y && y < geo.y + geo.height)
-            return i;
-    }
-    return sanitizeMonitorIndex(display.get_current_monitor());
+    // Mutter already tracks the monitor containing the pointer. Prefer its
+    // authoritative index instead of re-deriving it from pointer coordinates
+    // and monitor geometry, which can disagree in mixed-scale layouts.
+    return sanitizeMonitorIndex(global.display.get_current_monitor());
 }
 
 export function getWorkAreaForMonitor(monitorIndex: number): Rect {
