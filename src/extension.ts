@@ -4,7 +4,13 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 
 import {KeybindingManager} from './keybindings.js';
 import {QuakeManager} from './quake-manager.js';
-import {formatMessage, parseEntries, type QuakeEntry, type QuakeEntryTuple} from './types.js';
+import {
+    formatMessage,
+    parseEntries,
+    type QuakeEntry,
+    type QuakeEntryTuple,
+    type QuakeTopCropTuple,
+} from './types.js';
 
 export default class QuakeAnythingExtension extends Extension {
     private _settings: Gio.Settings | null = null;
@@ -23,7 +29,11 @@ export default class QuakeAnythingExtension extends Extension {
         this._keys.enable();
 
         this._reload();
-        this._settings.connectObject('changed::entries', () => this._reload(), this);
+        this._settings.connectObject(
+            'changed::entries', () => this._reload(),
+            'changed::top-crops', () => this._reload(),
+            this,
+        );
     }
 
     disable() {
@@ -44,7 +54,9 @@ export default class QuakeAnythingExtension extends Extension {
             return;
 
         const raw = this._settings.get_value('entries').deep_unpack() as QuakeEntryTuple[];
-        const entries = parseEntries(raw);
+        const topCrops = this._settings.get_value('top-crops')
+            .deep_unpack() as QuakeTopCropTuple[];
+        const entries = parseEntries(raw, topCrops);
         this._quake.setEntries(entries);
         this._rebindKeys(entries);
     }
