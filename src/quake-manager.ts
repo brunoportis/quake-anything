@@ -28,7 +28,6 @@ const FIRST_FRAME_FALLBACK_MS = 750;
 
 interface PendingClaim {
     entryId: string;
-    appId: string;
     timeoutId: number;
 }
 
@@ -128,9 +127,21 @@ export class QuakeManager {
         if (!entry)
             return;
 
-        const win = this._windows.get(entryId);
+        let win = this._windows.get(entryId);
         if (!win || !this._isWindowAlive(win)) {
             this._detachWindow(entryId, true);
+
+            win = this._findExistingWindow(entry);
+            if (win) {
+                this._claimWindow(entryId, win, true);
+
+                if (this._isVisible(win))
+                    this._hide(entryId, win, entry);
+                else
+                    this._show(entryId, win, entry);
+                return;
+            }
+
             this._spawn(entry);
             return;
         }
@@ -174,7 +185,6 @@ export class QuakeManager {
         });
         this._pending = {
             entryId: entry.id,
-            appId: this._normalizeAppId(entry.appId),
             timeoutId,
         };
 
@@ -206,13 +216,13 @@ export class QuakeManager {
             if (!this._isWindowAlive(win))
                 return GLib.SOURCE_REMOVE;
 
-            if (!this._windowMatchesPending(win, pending.appId)) {
+            if (!this._windowMatchesPending(win, pending.entryId)) {
                 this._timeoutAdd(GLib.PRIORITY_DEFAULT, 100, () => {
                     if (!this._pending || this._pending.entryId !== pending.entryId)
                         return GLib.SOURCE_REMOVE;
                     if (!this._isWindowAlive(win))
                         return GLib.SOURCE_REMOVE;
-                    if (this._windowMatchesPending(win, pending.appId))
+                    if (this._windowMatchesPending(win, pending.entryId))
                         this._claimWindow(pending.entryId, win);
                     return GLib.SOURCE_REMOVE;
                 });
@@ -224,12 +234,64 @@ export class QuakeManager {
         });
     }
 
-    private _windowMatchesPending(win: Meta.Window, appId: string): boolean {
+    private _windowMatchesPending(win: Meta.Window, entryId: string): boolean {
+        const entry = this._entries.get(entryId);
+        return !!entry && this._windowMatchesEntry(win, entry);
+    }
+
+    private _windowMatchesEntry(win: Meta.Window, entry: QuakeEntry): boolean {
+        if (this._windowMatchesTrackedApp(win, entry.appId))
+            return true;
+
+        const startupWmClass = this._getStartupWmClass(entry.appId);
+        return !!startupWmClass && this._windowMatchesWmClass(win, startupWmClass);
+    }
+
+    private _windowMatchesTrackedApp(win: Meta.Window, appId: string): boolean {
         const tracker = Shell.WindowTracker.get_default();
         const app = tracker.get_window_app(win);
         if (!app)
             return false;
+
         return this._normalizeAppId(app.get_id()) === this._normalizeAppId(appId);
+    }
+
+    private _getStartupWmClass(appId: string): string | null {
+        const raw = appId.trim();
+        const desktopId = raw.endsWith('.desktop') ? raw : `${raw}.desktop`;
+        const info = GioUnix.DesktopAppInfo.new(desktopId);
+        return info?.get_startup_wm_class() ?? null;
+    }
+
+    private _windowMatchesWmClass(win: Meta.Window, startupWmClass: string): boolean {
+        const expected = startupWmClass.trim().toLowerCase();
+        if (!expected)
+            return false;
+
+        return [win.get_wm_class(), win.get_wm_class_instance()]
+            .some(value => value?.trim().toLowerCase() === expected);
+    }
+
+    private _findExistingWindow(entry: QuakeEntry): Meta.Window | null {
+        const windows = global.get_window_actors()
+            .map(actor => actor.meta_window)
+            .filter((win): win is Meta.Window => !!win && this._isWindowAlive(win));
+
+        // StartupWMClass is a stronger identity than Shell's generic app tracker,
+        // especially for Chromium/Chrome PWAs.
+        const startupWmClass = this._getStartupWmClass(entry.appId);
+        if (startupWmClass) {
+            const wmClassMatch = windows.find(win =>
+                this._windowMatchesWmClass(win, startupWmClass));
+            if (wmClassMatch)
+                return wmClassMatch;
+        }
+
+        // For regular apps, only recover automatically when there is a single
+        // matching window so we do not accidentally claim an unrelated window.
+        const trackedMatches = windows.filter(win =>
+            this._windowMatchesTrackedApp(win, entry.appId));
+        return trackedMatches.length === 1 ? trackedMatches[0] : null;
     }
 
     private _claimWindow(entryId: string, win: Meta.Window, isRestore = false): void {
