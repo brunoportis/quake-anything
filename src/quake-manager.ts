@@ -558,8 +558,8 @@ export class QuakeManager {
     private _applyTopCrop(
         actor: Clutter.Actor,
         topCrop: number,
-        width = actor.width,
-        height = actor.height,
+        width = actor.get_width(),
+        height = actor.get_height(),
     ): void {
         actor.remove_clip();
         if (topCrop <= 0)
