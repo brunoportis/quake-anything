@@ -22,7 +22,8 @@ const PERSISTENT_WINDOWS = new Map<number, string>();
 const PERSISTENT_PERCENT = new Map<string, number>();
 const PERSISTENT_MONITOR = new Map<string, number>();
 
-const ANIM_MS = 240;
+const SHOW_ANIM_MS = 240;
+const HIDE_ANIM_MS = 280;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
 
@@ -641,7 +642,7 @@ export class QuakeManager {
         actor.ease({
             translationX: 0,
             translationY: 0,
-            duration: ANIM_MS,
+            duration: SHOW_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onStopped: () => {
                 this._animating.delete(entryId);
@@ -682,8 +683,8 @@ export class QuakeManager {
         actor.ease({
             translationX: offset.x,
             translationY: offset.y,
-            duration: ANIM_MS,
-            mode: Clutter.AnimationMode.EASE_IN_CUBIC,
+            duration: HIDE_ANIM_MS,
+            mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
             onStopped: () => {
                 this._animating.delete(entryId);
 
