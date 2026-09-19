@@ -26,6 +26,7 @@ const SHOW_ANIM_MS = 240;
 const HIDE_ANIM_MS = 280;
 const CLAIM_TIMEOUT_MS = 8000;
 const FIRST_FRAME_FALLBACK_MS = 750;
+const MAX_TOP_CROP = 160;
 
 interface PendingClaim {
     entryId: string;
@@ -40,6 +41,7 @@ interface FirstFrameWatch {
 interface HideSnapshotState {
     entryId: string;
     visual: Clutter.Actor;
+    topCrop: number;
 }
 
 interface WindowManagerEffects {
@@ -473,6 +475,7 @@ export class QuakeManager {
             if (actor) {
                 this._clearHideSnapshot(actor);
                 actor.remove_all_transitions();
+                actor.remove_clip();
                 actor.set_translation(0, 0, 0);
                 actor.set_scale(1, 1);
                 actor.set_opacity(255);
@@ -544,15 +547,48 @@ export class QuakeManager {
         return this._livePercent.get(entryId) ?? entry.sizePercent;
     }
 
+    private _topCrop(entry: QuakeEntry): number {
+        const crop = Math.round(Number(entry.topCrop ?? 0));
+        return Math.min(
+            MAX_TOP_CROP,
+            Math.max(0, Number.isFinite(crop) ? crop : 0),
+        );
+    }
+
+    private _applyTopCrop(
+        actor: Clutter.Actor,
+        topCrop: number,
+        width = actor.width,
+        height = actor.height,
+    ): void {
+        actor.remove_clip();
+        if (topCrop <= 0)
+            return;
+
+        const safeWidth = Math.max(1, Math.round(width));
+        const safeHeight = Math.max(1, Math.round(height));
+        const crop = Math.min(topCrop, safeHeight - 1);
+        if (crop <= 0)
+            return;
+
+        actor.set_clip(0, crop, safeWidth, safeHeight - crop);
+    }
+
     private _rememberQuakePercent(entryId: string, win: Meta.Window, entry: QuakeEntry): void {
         if (!this._isWindowAlive(win))
             return;
 
         const frame = win.get_frame_rect();
         const monitor = sanitizeMonitorIndex(win.get_monitor());
+        const topCrop = this._topCrop(entry);
         const percent = percentFromRect(
             entry.side,
-            { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+            {
+                x: frame.x,
+                y: frame.y,
+                width: frame.width,
+                height: Math.max(1, frame.height - topCrop),
+            },
             monitor,
         );
         this._livePercent.set(entryId, percent);
@@ -592,7 +628,14 @@ export class QuakeManager {
             if (!win.located_on_workspace(workspace))
                 win.change_workspace(workspace);
 
-            win.move_resize_frame(false, rect.x, rect.y, rect.width, rect.height);
+            const topCrop = this._topCrop(entry);
+            win.move_resize_frame(
+                false,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height + topCrop,
+            );
             this._lastMonitor.set(entryId, monitor);
             PERSISTENT_MONITOR.set(entryId, monitor);
             if (!this._livePercent.has(entryId)) {
@@ -628,6 +671,7 @@ export class QuakeManager {
 
         if (actor) {
             actor.remove_all_transitions();
+            actor.remove_clip();
             actor.set_translation(0, 0, 0);
             actor.set_scale(1, 1);
             actor.set_opacity(0);
@@ -654,12 +698,15 @@ export class QuakeManager {
             return;
         }
 
+        const topCrop = this._topCrop(entry);
         const rect = computeQuakeRect(
             entry.side,
             this._effectivePercent(entryId, entry),
             sanitizeMonitorIndex(win.get_monitor()),
         );
         if (!isValidRect(rect)) {
+            this._applyTopCrop(actor, topCrop);
+            actor.set_translation(0, -topCrop, 0);
             actor.set_opacity(255);
             win.activate(global.get_current_time());
             return;
@@ -673,7 +720,8 @@ export class QuakeManager {
         // Mutter's authoritative buffer geometry before our slide-in starts.
         actor.set_position(bufferRect.x, bufferRect.y);
         actor.set_size(bufferRect.width, bufferRect.height);
-        actor.set_translation(offset.x, offset.y, 0);
+        this._applyTopCrop(actor, topCrop, bufferRect.width, bufferRect.height);
+        actor.set_translation(offset.x, offset.y - topCrop, 0);
         actor.set_opacity(255);
         win.activate(global.get_current_time());
 
@@ -682,7 +730,7 @@ export class QuakeManager {
         // TypeScript typings expose camelCase aliases instead, hence the cast.
         actor.ease({
             translation_x: 0,
-            translation_y: 0,
+            translation_y: -topCrop,
             duration: SHOW_ANIM_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onStopped: () => {
@@ -718,6 +766,7 @@ export class QuakeManager {
         }
 
         const offset = slideOffsetForSide(entry.side, rect);
+        const topCrop = this._topCrop(entry);
 
         // Meta.Window geometry is authoritative. Meta.WindowActor can briefly
         // retain stale coordinates across unminimize/geometry synchronization.
@@ -744,9 +793,16 @@ export class QuakeManager {
                 reactive: false,
             });
             visual.set_content(content);
+            this._applyTopCrop(
+                visual,
+                topCrop,
+                snapshotRect.width,
+                snapshotRect.height,
+            );
+            visual.set_translation(0, -topCrop, 0);
             parent.add_child(visual);
 
-            this._hideSnapshots.set(actor, {entryId, visual});
+            this._hideSnapshots.set(actor, {entryId, visual, topCrop});
             this._animating.add(entryId);
 
             // Keep the real window mapped but invisible while the independent
@@ -758,7 +814,7 @@ export class QuakeManager {
             // Clutter.ease() uses GObject property names at runtime.
             visual.ease({
                 translation_x: offset.x,
-                translation_y: offset.y,
+                translation_y: offset.y - topCrop,
                 duration: HIDE_ANIM_MS,
                 mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
                 onStopped: () => {
@@ -791,7 +847,8 @@ export class QuakeManager {
         state.visual.remove_all_transitions();
         state.visual.destroy();
 
-        actor.set_translation(0, 0, 0);
+        this._applyTopCrop(actor, state.topCrop);
+        actor.set_translation(0, -state.topCrop, 0);
         actor.set_scale(1, 1);
         actor.set_opacity(255);
         actor.set_pivot_point(0, 0);
